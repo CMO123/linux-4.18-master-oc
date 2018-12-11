@@ -193,6 +193,7 @@ static void f2fs_write_end_io(struct bio *bio)
 
 /*
  * Return true, if pre_bio's bdev is same as its target device.
+ * 根据blk_addr，设置bio的bi_sector,bio_set_dev(bio,bdev)
  */
 struct block_device *f2fs_target_device(struct f2fs_sb_info *sbi,
 				block_t blk_addr, struct bio *bio)
@@ -234,11 +235,12 @@ static bool __same_bdev(struct f2fs_sb_info *sbi,
 
 /*
  * Low-level block read/write IO operations.
+ * 创建bio，设置bio的bi_sector, bi_private, bi_end_io等
  */
 static struct bio *__bio_alloc(struct f2fs_sb_info *sbi, block_t blk_addr,
 				struct writeback_control *wbc,
 				int npages, bool is_read,
-				enum page_type type, enum temp_type temp)
+				enum page_type type, enum temp_type temp)//page_type为data或node，temp为温度warm
 {
 	struct bio *bio;
 
@@ -247,9 +249,9 @@ static struct bio *__bio_alloc(struct f2fs_sb_info *sbi, block_t blk_addr,
 		npages = 64;
 #endif
 
-	bio = f2fs_bio_alloc(sbi, npages, true);
+	bio = f2fs_bio_alloc(sbi, npages, true);//分配npage个bio
 
-	f2fs_target_device(sbi, blk_addr, bio);
+	f2fs_target_device(sbi, blk_addr, bio); //根据blk_addr,设置bio的bi_sector和设备等。
 	if (is_read) {
 		bio->bi_end_io = f2fs_read_end_io;
 		bio->bi_private = NULL;
@@ -267,7 +269,7 @@ static struct bio *__bio_alloc(struct f2fs_sb_info *sbi, block_t blk_addr,
 static inline void __submit_bio(struct f2fs_sb_info *sbi,
 				struct bio *bio, enum page_type type)
 {
-	if (!is_read_io(bio_op(bio))) {
+	if (!is_read_io(bio_op(bio))) {//写操作
 		unsigned int start;
 #ifdef CMO_OCSSD
 		if (type != DATA && type != NODE)
@@ -456,6 +458,7 @@ void f2fs_flush_merged_writes(struct f2fs_sb_info *sbi)
 /*
  * Fill the locked page with data located in the block address.
  * A caller needs to unlock the page on failure.
+ * 根据提供的已经上锁的page，组件bio从设备中读取数据
  */
 int f2fs_submit_page_bio(struct f2fs_io_info *fio)
 {
@@ -464,15 +467,15 @@ int f2fs_submit_page_bio(struct f2fs_io_info *fio)
 			fio->encrypted_page : fio->page;
 
 #ifdef AMF_META_LOGGING
+//#ifdef CMO_TEMP
 	if (is_gc_needed (fio->sbi, get_metalog_free_blks (fio->sbi)) == 0) {
 		if (amf_do_gc(fio->sbi) != 0) {
 			amf_dbg_msg ("[ERROR] amf_do_gc failed\n");
 		}
 	}
+//#endif
 				
 #endif
-
-
 
 	verify_block_addr(fio, fio->new_blkaddr);
 	trace_f2fs_submit_page_bio(page, fio);
@@ -480,7 +483,7 @@ int f2fs_submit_page_bio(struct f2fs_io_info *fio)
 
 	/* Allocate a new bio */
 	bio = __bio_alloc(fio->sbi, fio->new_blkaddr, fio->io_wbc,
-				1, is_read_io(fio->op), fio->type, fio->temp);
+				1, is_read_io(fio->op), fio->type, fio->temp);//根据fio的new_blkaddr, npages=1，read/write， fio->type=META,
 
 	if (bio_add_page(bio, page, PAGE_SIZE, 0) < PAGE_SIZE) {
 		bio_put(bio);
@@ -496,7 +499,8 @@ int f2fs_submit_page_bio(struct f2fs_io_info *fio)
 }
 
 void f2fs_submit_page_write(struct f2fs_io_info *fio)
-{
+{//将fio的page加入write_io中，等到满足一定条件时，一起__submit_merged_bio()将write_io中的数据提交
+//包括bio的创建
 	struct f2fs_sb_info *sbi = fio->sbi;
 	enum page_type btype = PAGE_TYPE_OF_BIO(fio->type);
 	struct f2fs_bio_info *io = sbi->write_io[btype] + fio->temp;
@@ -504,7 +508,7 @@ void f2fs_submit_page_write(struct f2fs_io_info *fio)
 
 	f2fs_bug_on(sbi, is_read_io(fio->op));
 
-	down_write(&io->io_rwsem);
+	down_write(&io->io_rwsem);//每个curseg类型一个锁
 next:
 	if (fio->in_list) {
 		spin_lock(&io->io_lock);
@@ -531,7 +535,7 @@ next:
 
 	if (io->bio && (io->last_block_in_bio != fio->new_blkaddr - 1 ||
 	    (io->fio.op != fio->op || io->fio.op_flags != fio->op_flags) ||
-			!__same_bdev(sbi, fio->new_blkaddr, io->bio)))
+			!__same_bdev(sbi, fio->new_blkaddr, io->bio)))//只有当满足条件时才会__submit_merged_bio提交
 		__submit_merged_bio(io);
 alloc_new:
 	if (io->bio == NULL) {
@@ -574,9 +578,15 @@ static struct bio *f2fs_grab_read_bio(struct inode *inode, block_t blkaddr,
 	struct bio_post_read_ctx *ctx;
 	unsigned int post_read_steps = 0;
 
+#ifdef CMO_OCSSD
+	bio = f2fs_bio_alloc(sbi, min_t(int, nr_pages, 64), false);//由于每次只能处理64个命令
+	if (!bio)
+		return ERR_PTR(-ENOMEM);
+#else
 	bio = f2fs_bio_alloc(sbi, min_t(int, nr_pages, BIO_MAX_PAGES), false);
 	if (!bio)
 		return ERR_PTR(-ENOMEM);
+#endif
 	f2fs_target_device(sbi, blkaddr, bio);
 	bio->bi_end_io = f2fs_read_end_io;
 	bio_set_op_attrs(bio, REQ_OP_READ, 0);

@@ -1818,7 +1818,7 @@ static void __set_sit_entry_type(struct f2fs_sb_info *sbi, int type,
 	if (modified)
 		__mark_sit_entry_dirty(sbi, segno);
 }
-
+//更新blkaddr的sit
 static void update_sit_entry(struct f2fs_sb_info *sbi, block_t blkaddr, int del)
 {
 	struct seg_entry *se;
@@ -2594,7 +2594,7 @@ int f2fs_rw_hint_to_seg_type(enum rw_hint hint)
  * WRITE_LIFE_MEDIUM     "                        WRITE_LIFE_MEDIUM
  * WRITE_LIFE_LONG       "                        WRITE_LIFE_LONG
  */
-
+//不同的fs配置，根据page_type 和 temperature设定传递给底下设备驱动的hints
 enum rw_hint f2fs_io_type_to_rw_hint(struct f2fs_sb_info *sbi,
 				enum page_type type, enum temp_type temp)
 {
@@ -2706,7 +2706,7 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 		block_t old_blkaddr, block_t *new_blkaddr,
 		struct f2fs_summary *sum, int type,
 		struct f2fs_io_info *fio, bool add_list)
-{
+{//分配new_blkaddr, 将sum写入curseg的sum_blk，更新sit信息，填充node的footer，将fio加入write_io对应的list里面
 	struct sit_info *sit_i = SIT_I(sbi);
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
 
@@ -2715,18 +2715,18 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 	mutex_lock(&curseg->curseg_mutex);
 	down_write(&sit_i->sentry_lock);
 
-	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);
+	*new_blkaddr = NEXT_FREE_BLKADDR(sbi, curseg);//根据type获得下一个curseg的地址
 
-	f2fs_wait_discard_bio(sbi, *new_blkaddr);
+	f2fs_wait_discard_bio(sbi, *new_blkaddr);//等待new_blkaddr的discard_bio完成
 
 	/*
 	 * __add_sum_entry should be resided under the curseg_mutex
 	 * because, this function updates a summary entry in the
 	 * current summary block.
 	 */
-	__add_sum_entry(sbi, type, sum);
+	__add_sum_entry(sbi, type, sum);//将summary写入当前curseg所在的sum_blk
 
-	__refresh_next_blkoff(sbi, curseg);
+	__refresh_next_blkoff(sbi, curseg);//更新curseg->next_blkoff
 
 	stat_inc_block_count(sbi, curseg);
 
@@ -2734,11 +2734,11 @@ void f2fs_allocate_data_block(struct f2fs_sb_info *sbi, struct page *page,
 	 * SIT information should be updated before segment allocation,
 	 * since SSR needs latest valid block information.
 	 */
-	update_sit_entry(sbi, *new_blkaddr, 1);
+	update_sit_entry(sbi, *new_blkaddr, 1);//更新new_blkaddr所在seg的sit信息
 	if (GET_SEGNO(sbi, old_blkaddr) != NULL_SEGNO)
-		update_sit_entry(sbi, old_blkaddr, -1);
+		update_sit_entry(sbi, old_blkaddr, -1);//更新old_blkaddr所在seg的sit信息
 
-	if (!__has_curseg_space(sbi, type))
+	if (!__has_curseg_space(sbi, type))//如果当前curseg的空间不足，则分配下一个segment
 		sit_i->s_ops->allocate_segment(sbi, type, false);
 
 	/*
@@ -2821,7 +2821,7 @@ reallocate:
 
 void f2fs_do_write_meta_page(struct f2fs_sb_info *sbi, struct page *page,
 					enum iostat_type io_type)
-{
+{//构建fio
 	struct f2fs_io_info fio = {
 		.sbi = sbi,
 		.type = META,
@@ -3699,6 +3699,8 @@ static int build_sit_entries(struct f2fs_sb_info *sbi)
 	int err = 0;
 	block_t total_node_blocks = 0;
 
+
+
 	//1. 扫描一遍sit，根据sit信息恢复sit_i->sentries[]信息
 	do {
 		readed = f2fs_ra_meta_pages(sbi, start_blk, BIO_MAX_PAGES,
@@ -3746,6 +3748,7 @@ static int build_sit_entries(struct f2fs_sb_info *sbi)
 		start_blk += readed;
 	} while (start_blk < sit_blk_cnt);
 
+
 	//2. 根据写入ckpt中的curseg_cold_data->journal，即sit信息恢复新的sit信息
 	down_read(&curseg->journal_rwsem);
 	for (i = 0; i < sits_in_cursum(journal); i++) {
@@ -3767,7 +3770,7 @@ static int build_sit_entries(struct f2fs_sb_info *sbi)
 		old_valid_blocks = se->valid_blocks;
 		if (IS_NODESEG(se->type))
 			total_node_blocks -= old_valid_blocks;
-
+pr_notice("start = %d\n",start);
 		err = check_block_count(sbi, start, &sit);
 		if (err)
 			break;
@@ -3796,6 +3799,7 @@ static int build_sit_entries(struct f2fs_sb_info *sbi)
 	}
 	up_read(&curseg->journal_rwsem);
 
+
 	if (!err && total_node_blocks != valid_node_count(sbi)) {
 		f2fs_msg(sbi->sb, KERN_ERR,
 			"SIT is corrupted node# %u vs %u",
@@ -3803,6 +3807,9 @@ static int build_sit_entries(struct f2fs_sb_info *sbi)
 		set_sbi_flag(sbi, SBI_NEED_FSCK);
 		err = -EINVAL;
 	}
+	
+
+	pr_notice("err3 = %d\n",err);
 
 	return err;
 }
@@ -3921,11 +3928,15 @@ static void init_min_max_mtime(struct f2fs_sb_info *sbi)
 }
 
 int f2fs_build_segment_manager(struct f2fs_sb_info *sbi)
-{
+{//建立segment管理信息，如main_blkaddr,main_segments,ssa_blkaddr; sit信息，free_segmap信息，curseg信息，dirty_seg信息，mtime等
 	struct f2fs_super_block *raw_super = F2FS_RAW_SUPER(sbi);
 	struct f2fs_checkpoint *ckpt = F2FS_CKPT(sbi);
 	struct f2fs_sm_info *sm_info;
 	int err;
+#ifdef CMO_DEBUG
+	pr_notice("Enter f2fs_build_segment_manager()\n");
+
+#endif
 
 	sm_info = f2fs_kzalloc(sbi, sizeof(struct f2fs_sm_info), GFP_KERNEL);
 	if (!sm_info)
@@ -3933,15 +3944,15 @@ int f2fs_build_segment_manager(struct f2fs_sb_info *sbi)
 
 	/* init sm info */
 	sbi->sm_info = sm_info;
-	sm_info->seg0_blkaddr = le32_to_cpu(raw_super->segment0_blkaddr);
-	sm_info->main_blkaddr = le32_to_cpu(raw_super->main_blkaddr);
-	sm_info->segment_count = le32_to_cpu(raw_super->segment_count);
-	sm_info->reserved_segments = le32_to_cpu(ckpt->rsvd_segment_count);
-	sm_info->ovp_segments = le32_to_cpu(ckpt->overprov_segment_count);
-	sm_info->main_segments = le32_to_cpu(raw_super->segment_count_main);
-	sm_info->ssa_blkaddr = le32_to_cpu(raw_super->ssa_blkaddr);
+	sm_info->seg0_blkaddr = le32_to_cpu(raw_super->segment0_blkaddr);// 0x200 = 512
+	sm_info->main_blkaddr = le32_to_cpu(raw_super->main_blkaddr);//0x7200 = 29184
+	sm_info->segment_count = le32_to_cpu(raw_super->segment_count);//0x1fff = 8191
+	sm_info->reserved_segments = le32_to_cpu(ckpt->rsvd_segment_count);//0x87 = 135
+	sm_info->ovp_segments = le32_to_cpu(ckpt->overprov_segment_count);//0x104 = 260
+	sm_info->main_segments = le32_to_cpu(raw_super->segment_count_main);//0x1fc7 = 8135
+	sm_info->ssa_blkaddr = le32_to_cpu(raw_super->ssa_blkaddr);//0x5200 = 20992
 	sm_info->rec_prefree_segments = sm_info->main_segments *
-					DEF_RECLAIM_PREFREE_SEGMENTS / 100;
+					DEF_RECLAIM_PREFREE_SEGMENTS / 100;//0x196 = 406
 	if (sm_info->rec_prefree_segments > DEF_MAX_RECLAIM_PREFREE_SEGMENTS)
 		sm_info->rec_prefree_segments = DEF_MAX_RECLAIM_PREFREE_SEGMENTS;
 
@@ -3950,41 +3961,65 @@ int f2fs_build_segment_manager(struct f2fs_sb_info *sbi)
 	sm_info->min_ipu_util = DEF_MIN_IPU_UTIL;
 	sm_info->min_fsync_blocks = DEF_MIN_FSYNC_BLOCKS;
 	sm_info->min_hot_blocks = DEF_MIN_HOT_BLOCKS;
-	sm_info->min_ssr_sections = reserved_sections(sbi);
+	sm_info->min_ssr_sections = reserved_sections(sbi);//0x87 = 135
 
 	INIT_LIST_HEAD(&sm_info->sit_entry_set);
 
 	init_rwsem(&sm_info->curseg_lock);
 
 	if (!f2fs_readonly(sbi->sb)) {
-		err = f2fs_create_flush_cmd_control(sbi);
+		err = f2fs_create_flush_cmd_control(sbi);//初始化f2fs_sm_info->fcc结构，并创建f2fs_issue_flush线程
 		if (err)
 			return err;
 	}
 
-	err = create_discard_cmd_control(sbi);
+	err = create_discard_cmd_control(sbi);//初始化f2fs_sm_info->dcc结构，并创建f2fs_issue_discard线程
 	if (err)
 		return err;
 
+
+	
+	// 创建sbi->sm_info->sit_info，
 	err = build_sit_info(sbi);
 	if (err)
 		return err;
+
+
+
+	// 为sm_info创建free_segmap_info，初始化segments全为dirty
 	err = build_free_segmap(sbi);
 	if (err)
 		return err;
+	// 为sm_info创建curseg_array
 	err = build_curseg(sbi);
 	if (err)
 		return err;
+#ifdef CMO_DEBUG
+				pr_notice("Enter build_curseg()\n");
+				mdelay(5000);
+#endif
 
 	/* reinit free segmap based on SIT */
+	//读取SIT信息和CURSEG_COLD_DATA的journal中的sit信息，放入sm_info->sit_i->sentries[]中
 	err = build_sit_entries(sbi);
+	
+#ifdef CMO_DEBUG
+					pr_notice("Enter build_sit_entries()\n");
+pr_notice("err = %d\n",err);
+					mdelay(5000);
+#endif
 	if (err)
 		return err;
-
+	//根据SIT信息，设置free_segment_map中的信息
 	init_free_segmap(sbi);
+	//根据free_segmap和SIT信息初始化dirty_seglist_info
 	err = build_dirty_segmap(sbi);
 	if (err)
 		return err;
+#ifdef CMO_DEBUG
+						pr_notice("Enter build_dirty_segmap()\n");
+						mdelay(5000);
+#endif
 
 	init_min_max_mtime(sbi);
 	return 0;

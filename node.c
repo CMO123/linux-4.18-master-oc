@@ -344,13 +344,13 @@ static void set_node_addr(struct f2fs_sb_info *sbi, struct node_info *ni,
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
 	struct nat_entry *e;
-	struct nat_entry *new = __alloc_nat_entry(ni->nid, true);
+	struct nat_entry *new = __alloc_nat_entry(ni->nid, true);//分配一个新的nat_entry,填充nid
 
 	down_write(&nm_i->nat_tree_lock);
 	e = __lookup_nat_cache(nm_i, ni->nid);
-	if (!e) {
+	if (!e) {//nat_cache中没有这个nid，则用new的nat_entry加入nat_tree
 		e = __init_nat_entry(nm_i, new, NULL, true);
-		copy_node_info(&e->ni, ni);
+		copy_node_info(&e->ni, ni);//用ni信息填充e
 		f2fs_bug_on(sbi, ni->blk_addr == NEW_ADDR);
 	} else if (new_blkaddr == NEW_ADDR) {
 		/*
@@ -418,6 +418,7 @@ int f2fs_try_to_free_nats(struct f2fs_sb_info *sbi, int nr_shrink)
 
 /*
  * This function always returns success
+ * 根据nid获得ni，node_info，包含nid的物理块地址
  */
 void f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 						struct node_info *ni)
@@ -435,7 +436,8 @@ void f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 
 	ni->nid = nid;
 
-	/* Check nat cache */
+	/*1. Check nat cache */
+	// 从nat_root这颗树中查找nid，如果找到，根据找到的树的node_entry e填充node_info ni, 返回
 	down_read(&nm_i->nat_tree_lock);
 	e = __lookup_nat_cache(nm_i, nid);
 	if (e) {
@@ -448,7 +450,8 @@ void f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 
 	memset(&ne, 0, sizeof(struct f2fs_nat_entry));
 
-	/* Check current segment summary */
+	/*2. Check current segment summary */
+	// 检查curseg_hot_data中的nat journal，根据f2fs_nat_entry(raw format)填充ni
 	down_read(&curseg->journal_rwsem);
 	i = f2fs_lookup_journal_in_cursum(journal, NAT_JOURNAL, nid, 0);
 	if (i >= 0) {
@@ -461,7 +464,8 @@ void f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 		goto cache;
 	}
 
-	/* Fill node_info from nat page */
+	/*3. Fill node_info from nat page */
+	// 从设备中读取nat page，根据nat page得到其中的f2fs_nat_entry,再来填充ne
 	index = current_nat_addr(sbi, nid);
 	up_read(&nm_i->nat_tree_lock);
 
@@ -469,7 +473,7 @@ void f2fs_get_node_info(struct f2fs_sb_info *sbi, nid_t nid,
 	nat_blk = (struct f2fs_nat_block *)page_address(page);
 	ne = nat_blk->entries[nid - start_nid];
 	node_info_from_raw_nat(ni, &ne);
-	f2fs_put_page(page, 1);
+	f2fs_put_page(page, 1);//按道理put_page以后这个page就没用了？？不过缓存其数据到nat_tree中
 cache:
 	/* cache nat entry */
 	cache_nat_entry(sbi, nid, &ne);
@@ -1375,7 +1379,7 @@ static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 		goto redirty_out;
 
 	/* get old block addr of this node page */
-	nid = nid_of_node(page);
+	nid = nid_of_node(page);//得到这个node page的旧块地址
 	f2fs_bug_on(sbi, page->index != nid);
 
 	if (wbc->for_reclaim) {
@@ -1385,7 +1389,7 @@ static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 		down_read(&sbi->node_write);
 	}
 
-	f2fs_get_node_info(sbi, nid, &ni);
+	f2fs_get_node_info(sbi, nid, &ni);//根据nid填充ni
 
 	/* This page is already truncated */
 	if (unlikely(ni.blk_addr == NULL_ADDR)) {
@@ -1403,7 +1407,7 @@ static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 	ClearPageError(page);
 	fio.old_blkaddr = ni.blk_addr;
 	f2fs_do_write_node_page(nid, &fio);
-	set_node_addr(sbi, &ni, fio.new_blkaddr, is_fsync_dnode(page));
+	set_node_addr(sbi, &ni, fio.new_blkaddr, is_fsync_dnode(page));//更新nat
 	dec_page_count(sbi, F2FS_DIRTY_NODES);
 	up_read(&sbi->node_write);
 
@@ -1730,7 +1734,7 @@ int f2fs_wait_on_node_pages_writeback(struct f2fs_sb_info *sbi, nid_t ino)
 
 static int f2fs_write_node_pages(struct address_space *mapping,
 			    struct writeback_control *wbc)
-{
+{//收集一定数目的node pages之后一起提交。
 	struct f2fs_sb_info *sbi = F2FS_M_SB(mapping);
 	struct blk_plug plug;
 	long diff;
@@ -1742,7 +1746,7 @@ static int f2fs_write_node_pages(struct address_space *mapping,
 	f2fs_balance_fs_bg(sbi);
 
 	/* collect a number of dirty node pages and write together */
-	if (get_pages(sbi, F2FS_DIRTY_NODES) < nr_pages_to_skip(sbi, NODE))
+	if (get_pages(sbi, F2FS_DIRTY_NODES) < nr_pages_to_skip(sbi, NODE))//收集一定数目的node pages，一起提交
 		goto skip_write;
 
 	if (wbc->sync_mode == WB_SYNC_ALL)
@@ -2784,7 +2788,7 @@ static int init_free_nid_cache(struct f2fs_sb_info *sbi)
 }
 
 int f2fs_build_node_manager(struct f2fs_sb_info *sbi)
-{
+{// node管理，nat_block，nat_block_bitmap,每个nat_block中nat entry的bitmap，free_nid的bitmap
 	int err;
 
 	sbi->nm_info = f2fs_kzalloc(sbi, sizeof(struct f2fs_nm_info),
@@ -2792,18 +2796,19 @@ int f2fs_build_node_manager(struct f2fs_sb_info *sbi)
 	if (!sbi->nm_info)
 		return -ENOMEM;
 
+	//初始化node管理，如nat_blkaddr,以及通过checkpoint读取nat_bitmap信息
 	err = init_node_manager(sbi);
 	if (err)
 		return err;
-
+	//初始化，nat_block的bitmap，每个nat_block中nat_entry的bitmap，每个nat_block中free_nid的数目
 	err = init_free_nid_cache(sbi);
 	if (err)
 		return err;
 
 	/* load free nid status from nat_bits table */
-	load_free_nid_bitmap(sbi);
+	load_free_nid_bitmap(sbi);//通过从checkpoint读出的empty_nat_bits和full_nat_bits，设置nm_i->free_nid_bitmap,和nm_i->nat_block_bitmap
 
-	f2fs_build_free_nids(sbi, true, true);
+	f2fs_build_free_nids(sbi, true, true);//从第4个nid开始查找并添加接下来8个nat_page中的free nid
 	return 0;
 }
 

@@ -2352,30 +2352,35 @@ static void init_sb_info(struct f2fs_sb_info *sbi)
 	int i, j;
 
 	sbi->log_sectors_per_block =
-		le32_to_cpu(raw_super->log_sectors_per_block);
-	sbi->log_blocksize = le32_to_cpu(raw_super->log_blocksize);
-	sbi->blocksize = 1 << sbi->log_blocksize;
-	sbi->log_blocks_per_seg = le32_to_cpu(raw_super->log_blocks_per_seg);
-	sbi->blocks_per_seg = 1 << sbi->log_blocks_per_seg;
-	sbi->segs_per_sec = le32_to_cpu(raw_super->segs_per_sec);
-	sbi->secs_per_zone = le32_to_cpu(raw_super->secs_per_zone);
-	sbi->total_sections = le32_to_cpu(raw_super->section_count);
+		le32_to_cpu(raw_super->log_sectors_per_block);//sbi->log_sectors_per_block = 0x0
+	sbi->log_blocksize = le32_to_cpu(raw_super->log_blocksize);//	sbi->log_blocksize = 0xc
+	sbi->blocksize = 1 << sbi->log_blocksize;//sbi->blocksize = 0x1000
+	sbi->log_blocks_per_seg = le32_to_cpu(raw_super->log_blocks_per_seg);//sbi->log_blocks_per_seg = 0x9
+	sbi->blocks_per_seg = 1 << sbi->log_blocks_per_seg;//	sbi->blocks_per_seg = 0x200
+	sbi->segs_per_sec = le32_to_cpu(raw_super->segs_per_sec);//sbi->segs_per_sec =  0x1
+	sbi->secs_per_zone = le32_to_cpu(raw_super->secs_per_zone);//0x1
+	sbi->total_sections = le32_to_cpu(raw_super->section_count);//0x1fc7
 	sbi->total_node_count =
 		(le32_to_cpu(raw_super->segment_count_nat) / 2)
-			* sbi->blocks_per_seg * NAT_ENTRY_PER_BLOCK;
-	sbi->root_ino_num = le32_to_cpu(raw_super->root_ino);
-	sbi->node_ino_num = le32_to_cpu(raw_super->node_ino);
-	sbi->meta_ino_num = le32_to_cpu(raw_super->meta_ino);
+			* sbi->blocks_per_seg * NAT_ENTRY_PER_BLOCK;//0x3ffc00
+	sbi->root_ino_num = le32_to_cpu(raw_super->root_ino);//0x3
+	sbi->node_ino_num = le32_to_cpu(raw_super->node_ino);//0x1
+	sbi->meta_ino_num = le32_to_cpu(raw_super->meta_ino);//0x2
 	sbi->cur_victim_sec = NULL_SECNO;
 	sbi->max_victim_search = DEF_MAX_VICTIM_SEARCH;
 
 	sbi->dir_level = DEF_DIR_LEVEL;
+#ifdef CMO_DEBUG
+	sbi->interval_time[CP_TIME] = 6000;
+#else
 	sbi->interval_time[CP_TIME] = DEF_CP_INTERVAL;
+#endif
+
 	sbi->interval_time[REQ_TIME] = DEF_IDLE_INTERVAL;
 	clear_sbi_flag(sbi, SBI_NEED_FSCK);
 
-	/*
-	pr_notice("sbi->log_sectors_per_block = 0x%x\n,	\
+#ifdef CMO_DEBUG	
+		pr_notice("sbi->log_sectors_per_block = 0x%x\n,	\
 		sbi->log_blocksize = 0x%x\n,\
 		sbi->blocksize = 0x%x\n,\
 		sbi->log_blocks_per_seg = 0x%x\n,\
@@ -2388,7 +2393,7 @@ static void init_sb_info(struct f2fs_sb_info *sbi)
 		sbi->node_ino_num =  0x%x\n, \
 		sbi->meta_ino_num =  0x%x\n",sbi->log_sectors_per_block,sbi->log_blocksize,sbi->blocksize,sbi->log_blocks_per_seg,sbi->blocks_per_seg,	sbi->segs_per_sec,sbi->secs_per_zone, 
 		sbi->total_sections,sbi->total_node_count,sbi->root_ino_num,sbi->node_ino_num,sbi->meta_ino_num);
-	*/
+#endif
 
 
 	for (i = 0; i < NR_COUNT_TYPE; i++)
@@ -2725,6 +2730,7 @@ try_onemore:
 	}
 
 	/*3. set a block size */
+	//将bdev->bd_block_size = size设置为F2FS_BLKSIZE大小,貌似不能设成其他值
 	if (unlikely(!sb_set_blocksize(sb, F2FS_BLKSIZE))) {
 		f2fs_msg(sb, KERN_ERR, "unable to set blocksize");
 		goto free_sbi;
@@ -2785,6 +2791,14 @@ try_onemore:
 	get_random_bytes(&sbi->s_next_generation, sizeof(u32));
 
 #ifdef CONFIG_QUOTA
+	/*
+		Disk quota磁盘配额技术是一种限制文件系统空间使用的技术。在Linux系统中，系统管理员可
+		以通过该技术限制其他用户在指定的容量范围内使用文件系统，从而防止个别用户过量使用而
+		影响到其他的用户，因此早先的磁盘配额技术都是基于user id和group id实现的。本文介绍的
+		project quota技术是社区近来新实现的一种磁盘配额技术，它不再基于用户和组来划分空间，
+		而基于project id实现，限额的粒度可以细到某个目录甚至单个文件，实现对文件系统空间布局进行控制。
+		*/
+
 	sb->dq_op = &f2fs_quota_operations;
 	if (f2fs_sb_has_quota_ino(sb))
 		sb->s_qcop = &dquot_quotactl_sysfile_ops;
@@ -2801,21 +2815,21 @@ try_onemore:
 #endif
 
 	/* 6.设置super_block参数*/
-	sb->s_op = &f2fs_sops;
-#ifdef CONFIG_F2FS_FS_ENCRYPTION
+	sb->s_op = &f2fs_sops;//初始化super_block的s_op项,sb->s_op= &jffs2_super_operations;
+#ifdef CONFIG_F2FS_FS_ENCRYPTION//没有进入if
 	sb->s_cop = &f2fs_cryptops;
 #endif
 	sb->s_xattr = f2fs_xattr_handlers;
 	sb->s_export_op = &f2fs_export_ops;
 	sb->s_magic = F2FS_SUPER_MAGIC;
-	sb->s_time_gran = 1;
+	sb->s_time_gran = 1;//c/m/atime的粒度
 	sb->s_flags = (sb->s_flags & ~SB_POSIXACL) |
 		(test_opt(sbi, POSIX_ACL) ? SB_POSIXACL : 0);
 	memcpy(&sb->s_uuid, raw_super->uuid, sizeof(raw_super->uuid));
 	sb->s_iflags |= SB_I_CGROUPWB;//sb->s_iflags=0x1
 
 	/* init f2fs-specific super block info */
-	sbi->valid_super_block = valid_super_block;
+	sbi->valid_super_block = valid_super_block;//sbi->valid_super_block=0x0
 	mutex_init(&sbi->gc_mutex);
 	mutex_init(&sbi->cp_mutex);
 	init_rwsem(&sbi->node_write);
@@ -2865,12 +2879,12 @@ try_onemore:
 #ifdef CMO_OCSSD	
 	sbi->s_lightpblk = lightpblk_fs_create(sb, "mylightpblk");
 	
-	//pr_notice("F2FS_IO_SIZE(sbi) = %d\n",F2FS_IO_SIZE(sbi));
+	
 	F2FS_OPTION(sbi).write_io_size_bits = 2;
-	//pr_notice("F2FS_IO_SIZE(sbi) = %d, F2FS_IO_SIZE_KB(sbi) = %d\n",F2FS_IO_SIZE(sbi),F2FS_IO_SIZE_KB(sbi));
+	pr_notice("F2FS_IO_SIZE(sbi) = %d, F2FS_IO_SIZE_KB(sbi) = %d\n",F2FS_IO_SIZE(sbi),F2FS_IO_SIZE_KB(sbi));
 	
 #endif
-
+	
 	
 #ifdef AMF_PMU
 
@@ -2897,6 +2911,10 @@ try_onemore:
 			f2fs_msg (sb, KERN_ERR, "Failed to build amf information");
 			goto free_sb_buf;
 		}
+#ifdef CMO_DEBUG
+		pr_notice("after build_ri()\n");
+		mdelay(10000);
+#endif 
 #endif	
 
 
@@ -2920,11 +2938,12 @@ try_onemore:
 	uint8_t* ptr_page_addr2 = (uint8_t*)page_address(bpage);
 	aret = tgt_submit_page_read_sync(sbi, bpage, 545);
 	pr_notice("ptr_page_addr2 = %d\n",*ptr_page_addr2);
-	*/	
+mdelay(20000);
+*/
 //=======================================================================
 
 	/* 10.初始化percpu变量，和F2FS_IO_SIZE() */
-	err = init_percpu_info(sbi);
+	err = init_percpu_info(sbi);//创建2个per-cpu变量，sbi->alloc_valid_block_count,sbi->total_valid_inode_count
 	if (err)
 		goto free_bio_info;
 
@@ -2938,22 +2957,27 @@ try_onemore:
 	}
 
 	/* 11. get an inode for meta space */
-	sbi->meta_inode = f2fs_iget(sb, F2FS_META_INO(sbi));
+	//为meta空间获得一个inode
+	sbi->meta_inode = f2fs_iget(sb, F2FS_META_INO(sbi));//F2FS_META_INO = 0x2; sbi->meta_inode->i_ino = 0x2;
 	if (IS_ERR(sbi->meta_inode)) {
 		f2fs_msg(sb, KERN_ERR, "Failed to read F2FS meta data inode");
 		err = PTR_ERR(sbi->meta_inode);
 		goto free_io_dummy;
 	}
 
+	//根据sbi信息，得到checkpoint起始地址，读取checkpoint放入sbi->ckpt中。
 	err = f2fs_get_valid_checkpoint(sbi);
 	if (err) {
 		f2fs_msg(sb, KERN_ERR, "Failed to get valid F2FS checkpoint");
 		goto free_meta_inode;
 	}
+#ifdef CMO_DEBUG
+	pr_notice("sbi->valid_super_block=%d\n",sbi->valid_super_block);
+#endif
 
-	
 
 	/* Initialize device list */
+	//初始化设备链表，从raw_super.devs[i]中拷贝到sbi->devs[i]中
 	err = f2fs_scan_devices(sbi);
 	if (err) {
 		f2fs_msg(sb, KERN_ERR, "Failed to find devices");
@@ -2961,13 +2985,13 @@ try_onemore:
 	}
 
 	sbi->total_valid_node_count =
-				le32_to_cpu(sbi->ckpt->valid_node_count);
+				le32_to_cpu(sbi->ckpt->valid_node_count);//0x1
 	percpu_counter_set(&sbi->total_valid_inode_count,
 				le32_to_cpu(sbi->ckpt->valid_inode_count));
-	sbi->user_block_count = le64_to_cpu(sbi->ckpt->user_block_count);
+	sbi->user_block_count = le64_to_cpu(sbi->ckpt->user_block_count);//0x3d8600= 4032000
 	sbi->total_valid_block_count =
-				le64_to_cpu(sbi->ckpt->valid_block_count);
-	sbi->last_valid_block_count = sbi->total_valid_block_count;
+				le64_to_cpu(sbi->ckpt->valid_block_count);//0x2，main area中有效的block数目
+	sbi->last_valid_block_count = sbi->total_valid_block_count;//0x2
 	sbi->reserved_blocks = 0;
 	sbi->current_reserved_blocks = 0;
 	limit_reserve_root(sbi);
@@ -2976,18 +3000,32 @@ try_onemore:
 		INIT_LIST_HEAD(&sbi->inode_list[i]);
 		spin_lock_init(&sbi->inode_lock[i]);
 	}
+	
 
 	f2fs_init_extent_cache_info(sbi);
 
+
+	//初始化inode management cache进行inode 管理
 	f2fs_init_ino_entry_info(sbi);
+#ifdef CMO_DEBUG
+							pr_notice("after f2fs_init_ino_entry_info()\n");
+							mdelay(5000);
+#endif 
 
 	/* setup f2fs internal modules */
+	//建立segments的管理信息，如sit，free_segmap,dirty_segmap,curseg
 	err = f2fs_build_segment_manager(sbi);
 	if (err) {
 		f2fs_msg(sb, KERN_ERR,
 			"Failed to initialize F2FS segment manager");
 		goto free_sm;
 	}
+#ifdef CMO_DEBUG
+					pr_notice("after f2fs_build_segment_manager()\n");
+					mdelay(10000);
+#endif 	
+
+	// node管理，nat_block，nat_block_bitmap,每个nat_block中nat entry的bitmap，free_nid的bitmap
 	err = f2fs_build_node_manager(sbi);
 	if (err) {
 		f2fs_msg(sb, KERN_ERR,
@@ -3002,11 +3040,15 @@ try_onemore:
 
 	/* Read accumulated write IO statistics if exists */
 	seg_i = CURSEG_I(sbi, CURSEG_HOT_NODE);
-	if (__exist_node_summaries(sbi))
+	if (__exist_node_summaries(sbi))//进入这个if
 		sbi->kbytes_written =
-			le64_to_cpu(seg_i->journal->info.kbytes_written);
+			le64_to_cpu(seg_i->journal->info.kbytes_written);// 0x0
 
 	f2fs_build_gc_manager(sbi);
+#ifdef CMO_DEBUG
+				pr_notice("after f2fs_build_gc_manager()\n");
+				mdelay(10000);
+#endif 	
 
 	/* get an inode for node space */
 	sbi->node_inode = f2fs_iget(sb, F2FS_NODE_INO(sbi));
@@ -3021,6 +3063,11 @@ try_onemore:
 		goto free_node_inode;
 
 	/* read root inode and dentry */
+	/*
+	该函数能够查询特定超级块下指定inode number的inode。如果inode number不存在，则创建新的inode，并将inode number赋值给新的inode.
+	一般来说系统都用类似的jffs2_iget->iget_locked/ubifs_iget->iget_locked来创建新inode，或查询已存在的inode。
+	每个超级块都存在一个root inode,其中结点号是inode->i_ino=1，返回值是超级块的根节点inode。
+	*/
 	root = f2fs_iget(sb, F2FS_ROOT_INO(sbi));
 	if (IS_ERR(root)) {
 		f2fs_msg(sb, KERN_ERR, "Failed to read root inode");
@@ -3032,12 +3079,17 @@ try_onemore:
 		err = -EINVAL;
 		goto free_node_inode;
 	}
-
+	
+	//每个超级块都存在一个root inode对应的目录项dentry,其中结点号是dentry->d_iname="/"
 	sb->s_root = d_make_root(root); /* allocate root dentry */
 	if (!sb->s_root) {
 		err = -ENOMEM;
 		goto free_root_inode;
 	}
+#ifdef CMO_DEBUG
+					pr_notice("after f2fs_iget(root)\n");
+					mdelay(10000);
+#endif 
 
 	err = f2fs_register_sysfs(sbi);
 	if (err)
@@ -3065,7 +3117,7 @@ try_onemore:
 	/* recover fsynced data */
 #ifndef CMO_OCSSD
 
-	if (!test_opt(sbi, DISABLE_ROLL_FORWARD)) {
+	if (!test_opt(sbi, DISABLE_ROLL_FORWARD)) {//进入这个
 		//*
 		// * mount should be failed, when device has readonly mode, and
 		// * previous checkpoint was not done by clean system shutdown.
@@ -3102,6 +3154,7 @@ try_onemore:
 	
 #endif
 
+
 skip_recovery:
 	/* f2fs_recover_fsync_data() cleared this already */
 	clear_sbi_flag(sbi, SBI_POR_DOING);
@@ -3112,6 +3165,7 @@ skip_recovery:
 	 */
 	if (test_opt(sbi, BG_GC) && !f2fs_readonly(sb)) {
 		/* After POR, we can run background GC thread.*/
+		//开始后台GC
 		err = f2fs_start_gc_thread(sbi);
 		if (err)
 			goto free_meta;
@@ -3204,7 +3258,7 @@ free_sbi:
 static struct dentry *f2fs_mount(struct file_system_type *fs_type, int flags,
 			const char *dev_name, void *data)
 {
-	return mount_bdev(fs_type, flags, dev_name, data, f2fs_fill_super);
+	return mount_bdev(fs_type, flags, dev_name, data, f2fs_fill_super);//mount_bdev是用于块设备挂载的函数。调用f2fs_fill_super
 }
 
 static void kill_f2fs_super(struct super_block *sb)

@@ -1405,6 +1405,7 @@ static inline u32 f2fs_crc32(struct f2fs_sb_info *sbi, const void *address,
 static inline bool f2fs_crc_valid(struct f2fs_sb_info *sbi, __u32 blk_crc,
 				  void *buf, size_t buf_size)
 {
+pr_notice("f2fs_crc32(sbi, buf, buf_size)=%d, blk_crc=%d\n",f2fs_crc32(sbi, buf, buf_size),blk_crc);
 	return f2fs_crc32(sbi, buf, buf_size) == blk_crc;
 }
 
@@ -1993,7 +1994,7 @@ static inline s64 valid_inode_count(struct f2fs_sb_info *sbi)
 
 static inline struct page *f2fs_grab_cache_page(struct address_space *mapping,
 						pgoff_t index, bool for_write)
-{
+{//从mapping这个cache中找到index offset所在的page，如果没有则创建，返回的page已经加锁
 #ifdef CONFIG_F2FS_FAULT_INJECTION
 	struct page *page = find_lock_page(mapping, index);
 

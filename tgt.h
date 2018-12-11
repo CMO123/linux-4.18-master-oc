@@ -460,6 +460,11 @@ static void tgt_end_io_read(struct nvm_rq* rqd)
 static void bio_map_addr_endio(struct bio* bio){
 	bio_put(bio);
 }
+static inline int tgt_io_aligned(struct f2fs_sb_info* sbi, int nr_secs)
+{
+	struct lightpblk* alightpblk = sbi->s_lightpblk;
+	return !(nr_secs % alightpblk->min_write_pgs);	
+}
 //==========================================================================
 static int tgt_setup_r_rq(struct f2fs_sb_info *sbi, struct nvm_rq* rqd, int nr_secs, nvm_end_io_fn(*end_io))
 {
@@ -482,11 +487,19 @@ static int tgt_setup_r_rq(struct f2fs_sb_info *sbi, struct nvm_rq* rqd, int nr_s
 		rqd->ppa_list = rqd->meta_list + tgt_dma_meta_size;
 		rqd->dma_ppa_list = rqd->dma_meta_list + tgt_dma_meta_size;
 		rqd->flags = NVM_IO_SUSPEND | NVM_IO_SCRAMBLE_ENABLE;	
-		rqd->flags |= geo->pln_mode >> 1;//sequential读
+
+		if(tgt_io_aligned(sbi, nr_secs)){
+			rqd->flags |= geo->pln_mode >> 1;//sequential读
+		}else{
+			rqd->flags |= geo->pln_mode >> 0;//random读
+		}
+	
 	}else{
 		rqd->flags = NVM_IO_SUSPEND | NVM_IO_SCRAMBLE_ENABLE;	
-		rqd->flags |= geo->pln_mode >> 1;//sequential读
+		rqd->flags |= geo->pln_mode >> 0;//random读
 	}
+
+	
 	
 	return 0;
 }
@@ -724,10 +737,11 @@ static int tgt_submit_addr_erase_async(struct f2fs_sb_info* sbi, block_t paddr, 
 }
 
 static int tgt_mapping_erase(struct f2fs_sb_info* sbi, block_t paddr, uint32_t nr_blks){
-	struct page* zero_page = alloc_page(GFP_NOFS | __GFP_ZERO);
+	//struct page* zero_page = alloc_page(GFP_NOFS | __GFP_ZERO);
 	int ret = 0;
 	int i;
 	
+	/*
 	uint8_t* ptr_page_addr = (uint8_t*)page_address(zero_page);
 	lock_page (zero_page);
 	memset(ptr_page_addr,0,PAGE_SIZE);
@@ -741,7 +755,7 @@ static int tgt_mapping_erase(struct f2fs_sb_info* sbi, block_t paddr, uint32_t n
 	}
 	unlock_page (zero_page);
 	__free_pages (zero_page, 0);
-	
+	*/
 	ret = tgt_submit_addr_erase_async(sbi, paddr, nr_blks);
 	return ret;
 
@@ -758,7 +772,9 @@ static int tgt_submit_page_read_sync(struct f2fs_sb_info *sbi, struct page* page
 	int ret = 0;
 
 	memset(&rqd, 0, sizeof(struct nvm_rq));
+#ifdef CMO_DEBUG
 	//pr_notice("tgt_submit_page_read_sync(), paddr = %d\n",paddr);
+#endif
 	/*创建一个bio*/
 	bio = bio_alloc(GFP_KERNEL, 1);	
 	bio_set_dev(bio, bdev);
@@ -775,6 +791,9 @@ static int tgt_submit_page_read_sync(struct f2fs_sb_info *sbi, struct page* page
 	ret = tgt_setup_r_rq(sbi, &rqd, 1, NULL);
 	rqd.ppa_addr = addr_ppa32_to_ppa64(sbi, paddr);
 
+#ifdef CMO_DEBUG
+	//pr_notice("rqd.ppa_addr = 0x%llx\n", rqd.ppa_addr);
+#endif
 	
 	ret = nvm_submit_io_sync(dev, &rqd);
 	//pr_notice("rqd.bio.bi_status = %d\n",rqd.bio->bi_status);

@@ -54,17 +54,18 @@ repeat:
 
 /*
  * We guarantee no failure on the returned page.
+ *  向底层发送请求读取meta数据的命令，貌似仅一个page
  */
 static struct page *__get_meta_page(struct f2fs_sb_info *sbi, pgoff_t index,
 							bool is_meta)
-{
+{//checkpoint的is_meta=true,但type=META,貌似不会对发送有影响
 	struct address_space *mapping = META_MAPPING(sbi);
 	struct page *page;
 	struct f2fs_io_info fio = {
 		.sbi = sbi,
 		.type = META,
 		.op = REQ_OP_READ,
-		.op_flags = REQ_META | REQ_PRIO,
+		.op_flags = REQ_META | REQ_PRIO,//把REQ_PRIO和REQ_META分离，各司其职，REQ_META仅用于描述request是一个元数据请求，而REQ_PRIO用于给CFQ在调度时的优先级hint
 		.old_blkaddr = index,
 		.new_blkaddr = index,
 		.encrypted_page = NULL,
@@ -74,7 +75,7 @@ static struct page *__get_meta_page(struct f2fs_sb_info *sbi, pgoff_t index,
 	if (unlikely(!is_meta))
 		fio.op_flags &= ~REQ_META;
 repeat:
-	page = f2fs_grab_cache_page(mapping, index, false);
+	page = f2fs_grab_cache_page(mapping, index, false);//获取或创建一个page，且page已加锁， false表明不是write
 	if (!page) {
 		cond_resched();
 		goto repeat;
@@ -89,7 +90,7 @@ repeat:
 		goto repeat;
 	}
 
-	lock_page(page);
+	lock_page(page);//可能是由于写入或读取完毕后，end_io会给page解锁，故此时能上锁
 	if (unlikely(page->mapping != mapping)) {
 		f2fs_put_page(page, 1);
 		goto repeat;
@@ -107,7 +108,7 @@ repeat:
 out:
 	return page;
 }
-
+//获取逻辑地址为index的元数据的page，逻辑地址是完全的，不需要转换
 struct page *f2fs_get_meta_page(struct f2fs_sb_info *sbi, pgoff_t index)
 {
 	return __get_meta_page(sbi, index, true);
@@ -741,6 +742,10 @@ static int get_checkpoint_version(struct f2fs_sb_info *sbi, block_t cp_addr,
 	size_t crc_offset = 0;
 	__u32 crc = 0;
 
+#ifdef CMO_DEBUG
+pr_notice("cp_addr = %d\n", cp_addr);
+#endif
+
 	*cp_page = f2fs_get_meta_page(sbi, cp_addr);
 	*cp_block = (struct f2fs_checkpoint *)page_address(*cp_page);
 
@@ -752,6 +757,7 @@ static int get_checkpoint_version(struct f2fs_sb_info *sbi, block_t cp_addr,
 	}
 
 	crc = cur_cp_crc(*cp_block);
+	pr_notice("crc = %d\n",crc);
 	if (!f2fs_crc_valid(sbi, crc, *cp_block, crc_offset)) {
 		f2fs_msg(sbi->sb, KERN_WARNING, "invalid crc value");
 		return -EINVAL;
@@ -795,14 +801,14 @@ invalid_cp1:
 }
 
 int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
-{
+{//根据sbi中存储的cp_blks和cp_blkaddr起始地址，读取checkpoint地址，根据地址从设备读取有效的checkpoint共cp_blks个block放入sbi->ckpt中。
 	struct f2fs_checkpoint *cp_block;
 	struct f2fs_super_block *fsb = sbi->raw_super;
 	struct page *cp1, *cp2, *cur_page;
 	unsigned long blk_size = sbi->blocksize;
 	unsigned long long cp1_version = 0, cp2_version = 0;
 	unsigned long long cp_start_blk_no;
-	unsigned int cp_blks = 1 + __cp_payload(sbi);
+	unsigned int cp_blks = 1 + __cp_payload(sbi);//1是checkpoint pack的头部
 	block_t cp_blk_no;
 	int i;
 
@@ -814,13 +820,24 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 	 * Finding out valid cp block involves read both
 	 * sets( cp pack1 and cp pack 2)
 	 */
+	 //f2fs:get_valid_checkpoint:808: cp_start_blk_no = 0x200
 	cp_start_blk_no = le32_to_cpu(fsb->cp_blkaddr);
 	
+#ifdef CMO_DEBUG
+		pr_notice("第一个checkpoint的地址, cp_start_blk_no = %d\n", cp_start_blk_no);
+#endif
+
 	cp1 = validate_checkpoint(sbi, cp_start_blk_no, &cp1_version);
 
 	/* The second checkpoint pack should start at the next segment */
+	//第二个checkpoint在下一个segment中
 	cp_start_blk_no += ((unsigned long long)1) <<
 				le32_to_cpu(fsb->log_blocks_per_seg);
+
+#ifdef CMO_DEBUG
+		pr_notice("第二个checkpoint的地址, cp_start_blk_no = %d\n", cp_start_blk_no);
+#endif
+
 	cp2 = validate_checkpoint(sbi, cp_start_blk_no, &cp2_version);
 
 	if (cp1 && cp2) {
@@ -839,6 +856,36 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 	cp_block = (struct f2fs_checkpoint *)page_address(cur_page);
 	memcpy(sbi->ckpt, cp_block, blk_size);
 
+
+	/*
+	pr_notice("sbi->ckpt->checkpoint_ver = 0x%x\n,sbi->ckpt->user_block_count= 0x%x\n,sbi->ckpt->valid_block_count= 0x%x\n,sbi->ckpt->rsvd_segment_count= 0x%x\n,	\
+		sbi->ckpt->overprov_segment_count= 0x%x\n,sbi->ckpt->free_segment_count= 0x%x\n,sbi->ckpt->cur_node_segno[0]= 0x%x\n,sbi->ckpt->cur_node_segno[1]= 0x%x\n,	\
+		sbi->ckpt->cur_node_segno[3]= 0x%x\n,sbi->ckpt->cur_node_blkoff[0]= 0x%x\n,sbi->ckpt->cur_node_blkoff[1]= 0x%x\n,sbi->ckpt->cur_node_blkoff[2]= 0x%x\n, \
+		sbi->ckpt->cur_node_blkoff[3]= 0x%x\n,sbi->ckpt->cur_data_segno[0]= 0x%x\n,sbi->ckpt->cur_data_segno[1]= 0x%x\n,sbi->ckpt->cur_data_segno[2]= 0x%x\n,	\
+		sbi->ckpt->cur_data_blkoff[0]= 0x%x\n,sbi->ckpt->cur_data_blkoff[1]= 0x%x\n,sbi->ckpt->cur_data_blkoff[2]= 0x%x\n,sbi->ckpt->ckpt_flags= 0x%x\n,	\
+		sbi->ckpt->cp_pack_total_block_count= 0x%x\n,sbi->ckpt->cp_pack_start_sum= 0x%x\n,sbi->ckpt->valid_node_count= 0x%x\n,sbi->ckpt->valid_inode_count= 0x%x\n, \
+		sbi->ckpt->next_free_nid= 0x%x\n",sbi->ckpt->checkpoint_ver,sbi->ckpt->user_block_count,sbi->ckpt->valid_block_count,sbi->ckpt->rsvd_segment_count,
+		sbi->ckpt->overprov_segment_count,sbi->ckpt->free_segment_count,sbi->ckpt->cur_node_segno[0],sbi->ckpt->cur_node_segno[1],
+		sbi->ckpt->cur_node_segno[3],sbi->ckpt->cur_node_blkoff[0],sbi->ckpt->cur_node_blkoff[1],sbi->ckpt->cur_node_blkoff[2],
+		sbi->ckpt->cur_node_blkoff[3],sbi->ckpt->cur_data_segno[0],sbi->ckpt->cur_data_segno[1],sbi->ckpt->cur_data_segno[2],
+		sbi->ckpt->cur_data_blkoff[0],sbi->ckpt->cur_data_blkoff[1],sbi->ckpt->cur_data_blkoff[2],sbi->ckpt->ckpt_flags,sbi->ckpt->cp_pack_total_block_count,
+		sbi->ckpt->cp_pack_start_sum,sbi->ckpt->valid_node_count,sbi->ckpt->valid_inode_count,sbi->ckpt->next_free_nid);
+	pr_notice("sbi->ckpt->sit_ver_bitmap_bytesize= 0x%x\n,sbi->ckpt->nat_ver_bitmap_bytesize= 0x%x\n,sbi->ckpt->checksum_offset= 0x%x\n,	\
+		sbi->ckpt->elapsed_time= 0x%x\n,sbi->ckpt->alloc_type[0]= 0x%x\n,sbi->ckpt->alloc_type[1]= 0x%x\n,sbi->ckpt->alloc_type[2]= 0x%x\n, \
+		sbi->ckpt->sit_nat_version_bitmap[0]= 0x%x\n,sbi->ckpt->sit_nat_version_bitmap[1]= 0x%x\n",sbi->ckpt->sit_ver_bitmap_bytesize,
+		sbi->ckpt->nat_ver_bitmap_bytesize,sbi->ckpt->checksum_offset,sbi->ckpt->elapsed_time,sbi->ckpt->alloc_type[0],sbi->ckpt->alloc_type[1],
+		sbi->ckpt->alloc_type[2],sbi->ckpt->sit_nat_version_bitmap[0],sbi->ckpt->sit_nat_version_bitmap[1]);
+	
+	f2fs:get_valid_checkpoint:821: checkpoint2的起始地址，cp_start_blk_no2 = 0x400, sbi->ckpt->checkpoint_ver = 0x5d4984af,sbi->ckpt->user_block_count= 0x3d8600,sbi->ckpt->valid_block_count= 0x2
+	,sbi->ckpt->rsvd_segment_count= 0x87,		sbi->ckpt->overprov_segment_count= 0x104,sbi->ckpt->free_segment_count= 0x1fc1,sbi->ckpt->cur_node_segno[0]= 0x0,sbi->ckpt->cur_node_segno[1]= 0x1
+	,		sbi->ckpt->cur_node_segno[3]= 0xffffffff,sbi->ckpt->cur_node_blkoff[0]= 0x1,sbi->ckpt->cur_node_blkoff[1]= 0x0,sbi->ckpt->cur_node_blkoff[2]= 0x0,sbi->ckpt->cur_node_blkoff[3]= 0x0
+	,sbi->ckpt->cur_data_segno[0]= 0x3,sbi->ckpt->cur_data_segno[1]= 0xfe2,sbi->ckpt->cur_data_segno[2]= 0x7f0, 	sbi->ckpt->cur_data_blkoff[0]= 0x1,sbi->ckpt->cur_data_blkoff[1]= 0x0
+	,sbi->ckpt->cur_data_blkoff[2]= 0x0,sbi->ckpt->ckpt_flags= 0x185,		sbi->ckpt->cp_pack_total_block_count= 0x6,sbi->ckpt->cp_pack_start_sum= 0x1,sbi->ckpt->valid_node_count= 0x1
+	,sbi->ckpt->valid_inode_count= 0x1, 	sbi->ckpt->next_free_nid= 0x4,sbi->ckpt->sit_ver_bitmap_bytesize= 0x40,sbi->ckpt->nat_ver_bitmap_bytesize= 0x480,sbi->ckpt->checksum_offset= 0xffc
+	,		sbi->ckpt->elapsed_time= 0x0,sbi->ckpt->alloc_type[0]= 0x0,sbi->ckpt->alloc_type[1]= 0x0,sbi->ckpt->alloc_type[2]= 0x0, 	sbi->ckpt->sit_nat_version_bitmap[0]= 0x0,sbi->ckpt->sit_nat_version_bitmap[1]= 0x0
+	*/
+
+
 	/* Sanity checking of checkpoint */
 	if (f2fs_sanity_check_ckpt(sbi))
 		goto free_fail_no_cp;
@@ -855,7 +902,7 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 	if (cur_page == cp2)
 		cp_blk_no += 1 << le32_to_cpu(fsb->log_blocks_per_seg);
 
-	for (i = 1; i < cp_blks; i++) {
+	for (i = 1; i < cp_blks; i++) {//逐个读取checkpoint中的内容，加上之前读的checkpoint头部一个page，共读取cp_blks个page
 		void *sit_bitmap_ptr;
 		unsigned char *ckpt = (unsigned char *)sbi->ckpt;
 

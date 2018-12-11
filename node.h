@@ -187,7 +187,7 @@ static inline void get_nat_bitmap(struct f2fs_sb_info *sbi, void *addr)
 #endif
 	memcpy(addr, nm_i->nat_bitmap, nm_i->bitmap_size);
 }
-
+//返回nid所属的nat_blk的地址，完整的逻辑地址
 static inline pgoff_t current_nat_addr(struct f2fs_sb_info *sbi, nid_t start)
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
@@ -203,9 +203,9 @@ static inline pgoff_t current_nat_addr(struct f2fs_sb_info *sbi, nid_t start)
 
 	block_addr = (pgoff_t)(nm_i->nat_blkaddr +
 		(block_off << 1) -
-		(block_off & (sbi->blocks_per_seg - 1)));
+		(block_off & (sbi->blocks_per_seg - 1)));//得到的块地址，为什么不直接nat_blkaddr + blk_off
 
-	if (f2fs_test_bit(block_off, nm_i->nat_bitmap))//切换到另一个nat中(2个nat)
+	if (f2fs_test_bit(block_off, nm_i->nat_bitmap))//nm_i->nat_bitmap,应该是记录#0这个nat_bitmap是否有效的
 		block_addr += sbi->blocks_per_seg;
 
 	return block_addr;
