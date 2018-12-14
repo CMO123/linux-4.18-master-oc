@@ -154,6 +154,10 @@ static void f2fs_write_end_io(struct bio *bio)
 	struct bio_vec *bvec;
 	int i;
 
+#ifdef CMO_DEBUG
+pr_notice("f2fs_write_end_io(), lblkaddr = %d \n", bio->bi_iter.bi_sector >> F2FS_LOG_SECTORS_PER_BLOCK);
+#endif
+
 	bio_for_each_segment_all(bvec, bio, i) {
 		struct page *page = bvec->bv_page;
 		enum count_type type = WB_DATA_TYPE(page);
@@ -269,9 +273,14 @@ static inline void __submit_bio(struct f2fs_sb_info *sbi,
 {
 	if (!is_read_io(bio_op(bio))) {
 		unsigned int start;
-#ifdef CMO_OCSSD
+
+pr_notice("__submit_bio(org),lblk = %d, nr_secs = %d\n", bio->bi_iter.bi_sector >> F2FS_LOG_SECTORS_PER_BLOCK,bio->bi_iter.bi_size / F2FS_BLKSIZE);
+	
+	
+#ifndef CMO_OCSSD
 		if (type != DATA && type != NODE)
 			goto submit_io;
+		//使得即使是meta数据，也可以用dummy_written_page填充
 #endif
 		if (f2fs_sb_has_blkzoned(sbi->sb) && current->plug)
 			blk_finish_plug(current->plug);

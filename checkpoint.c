@@ -745,6 +745,9 @@ static int get_checkpoint_version(struct f2fs_sb_info *sbi, block_t cp_addr,
 	*cp_block = (struct f2fs_checkpoint *)page_address(*cp_page);
 
 	crc_offset = le32_to_cpu((*cp_block)->checksum_offset);
+#ifdef CMO_DEBUG
+	//pr_notice("crc_offset = %d\n",crc_offset);
+#endif
 	if (crc_offset > (blk_size - sizeof(__le32))) {
 		f2fs_msg(sbi->sb, KERN_WARNING,
 			"invalid crc_offset: %zu", crc_offset);
@@ -752,6 +755,10 @@ static int get_checkpoint_version(struct f2fs_sb_info *sbi, block_t cp_addr,
 	}
 
 	crc = cur_cp_crc(*cp_block);
+#ifdef CMO_DEBUG
+	//	pr_notice("crc = %d\n",crc);
+#endif
+
 	if (!f2fs_crc_valid(sbi, crc, *cp_block, crc_offset)) {
 		f2fs_msg(sbi->sb, KERN_WARNING, "invalid crc value");
 		return -EINVAL;
@@ -769,6 +776,9 @@ static struct page *validate_checkpoint(struct f2fs_sb_info *sbi,
 	unsigned long long cur_version = 0, pre_version = 0;
 	int err;
 
+#ifdef CMO_DEBUG
+	//pr_notice("cp1 = %d",cp_addr);
+#endif
 	err = get_checkpoint_version(sbi, cp_addr, &cp_block,
 					&cp_page_1, version);
 	if (err)
@@ -776,6 +786,10 @@ static struct page *validate_checkpoint(struct f2fs_sb_info *sbi,
 	pre_version = *version;
 
 	cp_addr += le32_to_cpu(cp_block->cp_pack_total_block_count) - 1;
+#ifdef CMO_DEBUG
+		//pr_notice("cp2 = %d",cp_addr);
+#endif
+
 	err = get_checkpoint_version(sbi, cp_addr, &cp_block,
 					&cp_page_2, version);
 	if (err)
@@ -815,12 +829,19 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 	 * sets( cp pack1 and cp pack 2)
 	 */
 	cp_start_blk_no = le32_to_cpu(fsb->cp_blkaddr);
+#ifdef CMO_DEBUG
+	//pr_notice("cp_start_blk_no_1 = %d\n",cp_start_blk_no);
+#endif
 	
 	cp1 = validate_checkpoint(sbi, cp_start_blk_no, &cp1_version);
 
 	/* The second checkpoint pack should start at the next segment */
 	cp_start_blk_no += ((unsigned long long)1) <<
 				le32_to_cpu(fsb->log_blocks_per_seg);
+#ifdef CMO_DEBUG
+	//	pr_notice("cp_start_blk_no_1 = %d\n",cp_start_blk_no);
+#endif
+
 	cp2 = validate_checkpoint(sbi, cp_start_blk_no, &cp2_version);
 
 	if (cp1 && cp2) {

@@ -1003,6 +1003,9 @@ static void f2fs_put_super(struct super_block *sb)
 				amf_pmu_display(sbi);
 #endif
 
+#ifdef CMO_DEBUG
+	//pr_notice("sbi->ri->mapping_gc_eblkofs = %d\n",sbi->ri->mapping_gc_eblkofs);
+#endif
 	/* prevent remaining shrinker jobs */
 	mutex_lock(&sbi->umount_mutex);
 
@@ -2866,7 +2869,7 @@ try_onemore:
 	sbi->s_lightpblk = lightpblk_fs_create(sb, "mylightpblk");
 	
 	//pr_notice("F2FS_IO_SIZE(sbi) = %d\n",F2FS_IO_SIZE(sbi));
-	F2FS_OPTION(sbi).write_io_size_bits = 2;
+	F2FS_OPTION(sbi).write_io_size_bits = 1;
 	//pr_notice("F2FS_IO_SIZE(sbi) = %d, F2FS_IO_SIZE_KB(sbi) = %d\n",F2FS_IO_SIZE(sbi),F2FS_IO_SIZE_KB(sbi));
 	
 #endif
@@ -2876,6 +2879,7 @@ try_onemore:
 
 #ifdef CMO_DEBUG
 	pr_notice("The size of a checkpoint = %ld (B)\n",sizeof(struct f2fs_checkpoint));//193 B
+	pr_notice("sbi->s_lightpblk->min_write_pgs = %d\n",sbi->s_lightpblk->min_write_pgs);
 #endif
 	amf_pmu_create(sbi);
 				
@@ -2897,6 +2901,7 @@ try_onemore:
 			f2fs_msg (sb, KERN_ERR, "Failed to build amf information");
 			goto free_sb_buf;
 		}
+		
 #endif	
 
 
@@ -2945,11 +2950,23 @@ try_onemore:
 		goto free_io_dummy;
 	}
 
+#ifdef CMO_OCSSD
+	//pr_notice("before f2fs_get_valid_checkpoint()\n");
+#endif 
+
 	err = f2fs_get_valid_checkpoint(sbi);
 	if (err) {
 		f2fs_msg(sb, KERN_ERR, "Failed to get valid F2FS checkpoint");
 		goto free_meta_inode;
 	}
+#ifdef CMO_OCSSD
+		//pr_notice("after f2fs_get_valid_checkpoint()\n");
+	/*pr_notice("sbi->ckpt->cur_data_segno = %d,sbi->ckpt->cur_node_segno=%d, sbi->ckpt->checkpoint_ver=%d \
+	sbi->ckpt->valid_block_count=%d,sbi->ckpt->valid_inode_count=%d\n",
+	sbi->ckpt->cur_data_segno,sbi->ckpt->cur_node_segno, sbi->ckpt->checkpoint_ver,sbi->ckpt->valid_block_count,sbi->ckpt->valid_inode_count);
+	mdelay(10000);
+	*/
+#endif 
 
 	
 
@@ -2981,6 +2998,7 @@ try_onemore:
 
 	f2fs_init_ino_entry_info(sbi);
 
+
 	/* setup f2fs internal modules */
 	err = f2fs_build_segment_manager(sbi);
 	if (err) {
@@ -2988,6 +3006,8 @@ try_onemore:
 			"Failed to initialize F2FS segment manager");
 		goto free_sm;
 	}
+
+
 	err = f2fs_build_node_manager(sbi);
 	if (err) {
 		f2fs_msg(sb, KERN_ERR,

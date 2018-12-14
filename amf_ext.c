@@ -381,7 +381,7 @@ static int32_t create_metalog_mapping_table (struct f2fs_sb_info* sbi)
 				amf_dbg_msg("create_metalog_mapping_table(): error in tgt_submit_page_read.\n");
 				pr_notice("new_map_blk->magic = %u,new_map_blk->index = %u, new_map_blk->mapping[0]=%u\n",new_map_blk->magic, new_map_blk->index, new_map_blk->mapping[0]);
 			}
-			
+			//pr_notice("read mapping index = %d\n", index);
 			/* check version # */
 			if (new_map_blk->magic == cpu_to_le32 (0xEF)) {
 				uint32_t index = le32_to_cpu (new_map_blk->index);
@@ -629,7 +629,13 @@ int32_t amf_write_mapping_entries (struct f2fs_sb_info* sbi)
 	struct page* page = NULL;
 	int32_t nr_free_blks = 0;
 	uint32_t i = 0;
+	int min_write_secs = F2FS_IO_SIZE(sbi);
+	int secs_avaliable = 0, start = 0;
+	struct bio* bio = NULL;
 
+#ifdef CMO_DEBUG
+	//pr_notice("Enter amf_write_mapping_entries()\n");
+#endif
 	/* see if gc is needed for the mapping area */
 	nr_free_blks = get_mapping_free_blks (sbi);//512
 	if (is_mapping_gc_needed (sbi, nr_free_blks) == 0) {
@@ -638,21 +644,33 @@ int32_t amf_write_mapping_entries (struct f2fs_sb_info* sbi)
 
 	/* TODO: see if there are any dirty mapping entries */
 
+	bio = bio_alloc(GFP_KERNEL, BIO_MAX_SIZE);
+	if(!bio)
+		return -ENOMEM;
+
+	bio->bi_iter.bi_sector = SECTOR_FROM_BLOCK(ri->mapping_blkofs + ri->mapping_gc_eblkofs);
+	bio->bi_end_io = bio_map_addr_endio;
+	bio_set_op_attrs(bio, REQ_OP_WRITE, 0);
+	
 	/* write dirty entries to the mapping area */
 	for (i = 0; i < ri->nr_mapping_logi_blks; i++) {
 		__le32* ptr_page_addr = NULL;
-		uint32_t version = 0;
+		
 
 		/* see if it is dirty or not */
 		if (ri->map_blks[i].dirty == 0) {
 			continue;
 		}
-
+		
+		
+		secs_avaliable++;
+		
 		/* increase version numbers */
+		uint32_t version = 0;
 		version = le32_to_cpu (ri->map_blks[i].ver) + 1;
 		ri->map_blks[i].ver = cpu_to_le32 (version);
 		ri->map_blks[i].dirty = cpu_to_le32 (0);
-
+		
 		/* get the free page from the memory pool */
 		page = alloc_page (GFP_NOFS | __GFP_ZERO);
 		if (IS_ERR (page)) {
@@ -660,23 +678,57 @@ int32_t amf_write_mapping_entries (struct f2fs_sb_info* sbi)
 			return PTR_ERR (page);
 		}
 		lock_page (page);
-
+		
 		/* write dirty entires to NAND flash */
 		ptr_page_addr = (__le32*)page_address (page);
 		memcpy (ptr_page_addr, &ri->map_blks[i], F2FS_BLKSIZE);
-		/*risa_dbg_msg ("writing mapping (%u): %u", */
-		/*ri->map_blks[i].index, ri->mapping_blkofs + ri->mapping_gc_eblkofs);*/
-		/*risa_writepage_flash (sbi, page, ri->mapping_blkofs + ri->mapping_gc_eblkofs, 1);*/
-		//risa_writepage_flash (sbi, page, ri->mapping_blkofs + ri->mapping_gc_eblkofs, 0);
-		//write_meta_page(sbi, page,FS_META_IO);
-		tgt_submit_page_write_sync(sbi, page, ri->mapping_blkofs + ri->mapping_gc_eblkofs);
+
+		if(bio_add_page(bio, page, PAGE_SIZE, 0) < PAGE_SIZE)
+		{
+			pr_err("tgt_pblk: Error occur while calling tgt_submit_write");
+			bio_put(bio);
+			return -EFAULT;
+		}
+	}
+	#ifdef CMO_DEBUG
+		//pr_notice("start = %d\n",secs_avaliable);
+	#endif
+		start = secs_avaliable;
+		start %= min_write_secs;
+		if(start == 0){
+			goto submit_io;
+		}
+		/* fill dummy pages */
+		for (; start < F2FS_IO_SIZE(sbi); start++) {
+			struct page *page =
+				mempool_alloc(sbi->write_io_dummy,
+					GFP_NOIO | __GFP_ZERO | __GFP_NOFAIL);
+			f2fs_bug_on(sbi, !page);
+
+			SetPagePrivate(page);
+			set_page_private(page, (unsigned long)DUMMY_WRITTEN_PAGE);
+			lock_page(page);
+			if (bio_add_page(bio, page, PAGE_SIZE, 0) < PAGE_SIZE)
+				f2fs_bug_on(sbi, 1);
+			
+			secs_avaliable++;
+		}
+	
+submit_io:
+		#ifdef CMO_DEBUG
+		//pr_notice("secs_avaliable = %d\n",secs_avaliable);
+		#endif
+		amf_submit_bio_write_sync(sbi, bio);
 
 		/* update physical location */
 		ri->mapping_gc_eblkofs = 
-			(ri->mapping_gc_eblkofs + 1) % ri->nr_mapping_phys_blks;
+			(ri->mapping_gc_eblkofs + secs_avaliable) % ri->nr_mapping_phys_blks;
 
 		atomic64_add (1, &sbi->pmu.mapping_w);
-	}
+	
+#ifdef CMO_DEBUG
+		//pr_notice("End amf_write_mapping_entries()\n");
+#endif
 
 
 	return 0;
@@ -982,7 +1034,7 @@ void amf_submit_bio_write_sync(struct f2fs_sb_info* sbi, struct bio* bio)
 	struct nvm_tgt_dev* dev = sbi->s_lightpblk->tgt_dev;
 	unsigned int nr_secs = amf_get_secs(bio);
 	uint32_t lblkaddr = amf_get_lba(bio);
-	int i,j=0;
+	int i;
 	struct nvm_rq rqd;
 	int ret;
 
@@ -992,18 +1044,13 @@ retry:
 	rqd.bio = bio;
 	ret = tgt_setup_w_rq(sbi,&rqd, nr_secs, NULL);
 	
-	//rqd->ppa_list[0] = addr_to_gen_ppa(sbi, pblkaddr);
 	if(nr_secs > 1){
 		for(i = 0; i < nr_secs; i++){
-		rqd.ppa_list[j++] = addr_ppa32_to_ppa64(sbi, lblkaddr+i);
-		//pr_notice("lblkaddr = %d ==> rqd->ppa_list[j] = %d \n", lblkaddr+i, rqd.ppa_list[j-1]);
+		rqd.ppa_list[i] = addr_ppa32_to_ppa64(sbi, lblkaddr+i);
 		}
 	}else{
 		rqd.ppa_addr = addr_ppa32_to_ppa64(sbi, lblkaddr);
-		//pr_notice("lblkaddr = %d ==> rqd->ppa_addr = %d \n", lblkaddr, rqd.ppa_addr);
 	}	
-	//pr_notice("before nvm_submit_io_sync()\n");
-
 	ret = nvm_submit_io_sync(dev, &rqd);
 	if(ret){
 		pr_err("amf: amf_submit_bio_write failed:%d\n",ret);
@@ -1011,7 +1058,6 @@ retry:
 		goto free_ppa_list;
 	}
 
-//pr_notice("End amf_submit_bio_write_sync(), ret = %d\n",ret);
 free_ppa_list:
 	nvm_dev_dma_free(dev->parent, rqd.meta_list, rqd.dma_meta_list);
 	return ret;
@@ -1028,8 +1074,8 @@ void amf_submit_bio_write(struct f2fs_sb_info* sbi, struct bio* bio)
 	int ret;
 #ifdef CMO_DEBUG
 
-if(nr_secs > 1 && nr_secs%4 != 0)
-	pr_notice("Enter amf_submit_bio_write(), lblkaddr = %d, nr_secs = %d\n", lblkaddr, nr_secs);
+//if(nr_secs%4 != 0)
+//	pr_notice("Enter amf_submit_bio_write(), lblkaddr = %d, nr_secs = %d\n", lblkaddr, nr_secs);
 #endif
 retry:	
 	/*创建rqd*/
@@ -1064,18 +1110,97 @@ retry:
 }
 
 /*
- 由于meta数据需要经过transmap表转换，所以submit bio另外看
+ 由于meta数据需要经过transmap表转换，所以submit bio另外看,且为同步写入
 */
-
 void amf_submit_bio_meta_w (struct f2fs_sb_info* sbi, struct bio* bio)
+{
+	struct nvm_tgt_dev* dev = sbi->s_lightpblk->tgt_dev;
+	unsigned int nr_secs = amf_get_secs(bio);
+	uint32_t lblkaddr = amf_get_lba(bio);
+	uint32_t pblkaddr;
+	int i = 0;
+	struct nvm_rq rqd;
+	int ret;
+	
+		
+#ifdef CMO_DEBUG
+//if(amf_get_secs(bio)>1)
+//pr_notice("Enter amf_submit_bio_meta_w(), lblk = %d, nr_sec = %d\n", amf_get_lba(bio),amf_get_secs(bio));
+#endif
+
+	rqd.bio = bio;
+	ret = tgt_setup_w_rq(sbi, &rqd, nr_secs, NULL);
+
+	//添加映射表转换
+	if(nr_secs > 1){
+		for(i = 0; i < nr_secs; i++){
+			spin_lock (&sbi->mapping_lock);
+			pblkaddr = amf_get_new_pblkaddr (sbi, lblkaddr+i, 1);
+			if (pblkaddr == NULL_ADDR) {
+				spin_unlock (&sbi->mapping_lock);
+				amf_dbg_msg ("amf_get_new_pblkaddr failed");
+				ret = -1;
+				goto out;
+			}
+			/* update mapping table */
+			if (amf_map_l2p (sbi, lblkaddr+i, pblkaddr, 1) != 0) {
+				spin_unlock (&sbi->mapping_lock);
+				amf_dbg_msg ("amf_map_l2p failed,lblkaddr=%d, pblkaddr=%d",lblkaddr+i, pblkaddr);
+				ret = -1;
+				goto out;
+			}
+			spin_unlock (&sbi->mapping_lock);
+
+			rqd.ppa_list[i] = addr_ppa32_to_ppa64(sbi, pblkaddr);		
+		}
+	}else{
+		spin_lock (&sbi->mapping_lock);
+		pblkaddr = amf_get_new_pblkaddr (sbi, lblkaddr, 1);
+		if (pblkaddr == NULL_ADDR) {
+				spin_unlock (&sbi->mapping_lock);
+				amf_dbg_msg ("amf_get_new_pblkaddr failed");
+				ret = -1;
+				goto out;
+		}
+		/* update mapping table */
+		if (amf_map_l2p (sbi, lblkaddr, pblkaddr, 1) != 0) {
+			spin_unlock (&sbi->mapping_lock);
+			amf_dbg_msg ("amf_map_l2p failed,lblkaddr=%d, pblkaddr=%d",lblkaddr, pblkaddr);
+			ret = -1;
+			goto out;
+		}
+		spin_unlock (&sbi->mapping_lock);
+
+		rqd.ppa_addr = addr_ppa32_to_ppa64(sbi, pblkaddr);
+	}
+
+		ret = nvm_submit_io_sync(dev, &rqd);
+	
+		if(ret){
+			pr_err("amf: amf_submit_bio_meta_w()failed\n", ret);
+			bio_put(bio);
+			goto out;	
+		}
+
+			
+out:
+	nvm_dev_dma_free(dev->parent, rqd.meta_list, rqd.dma_meta_list);
+	//bio_put(rqd.bio);
+#ifdef CMO_DEBUG
+//	pr_notice("End amf_submit_bio_meta_w()\n");
+#endif 
+	return ret;	
+}
+
+void amf_submit_bio_meta_w_2 (struct f2fs_sb_info* sbi, struct bio* bio)
 {
 		struct page* src_page = NULL;
 		struct page* dst_page = NULL;
 		struct bio_vec bvec;
 		bool sync = op_is_sync(bio_op(bio));
 #ifdef CMO_DEBUG
-if(amf_get_secs(bio)>1)
-pr_notice("Enter amf_submit_bio_meta_w(), lblk = %d, nr_sec = %d\n", amf_get_lba(bio),amf_get_secs(bio));
+//if(amf_get_secs(bio)>1)
+//pr_notice("Enter amf_submit_bio_meta_w(), lblk = %d, nr_sec = %d\n", amf_get_lba(bio),amf_get_secs(bio));
 #endif
 		uint8_t* src_page_addr = NULL;
 		uint8_t* dst_page_addr = NULL;
@@ -1226,13 +1351,14 @@ void amf_submit_bio (struct f2fs_sb_info* sbi, struct bio * bio, enum page_type 
 {
 
 	block_t lblkaddr = amf_get_lba(bio) ;
-
-	if (amf_is_cp_blk (sbi, lblkaddr)) {
+#ifdef CMO_OCSSD
+	if (amf_is_cp_blk (sbi, lblkaddr) && op_is_write(bio_op(bio))) {
 		amf_write_mapping_entries (sbi);
 #ifdef AMF_PMU
-			atomic64_inc (&sbi->pmu.ckp_w);
+		atomic64_inc (&sbi->pmu.ckp_w);
 #endif
 	}
+#endif
 
 	if (is_valid_meta_lblkaddr (sbi, lblkaddr) == 0) {
 		if (op_is_write(bio_op(bio))) {//write

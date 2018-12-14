@@ -16,7 +16,7 @@
 #include "f2fs.h"
 
 #define tgt_dma_meta_size (sizeof(unsigned long) * 128)
-
+#define BIO_MAX_SIZE 64
 static struct lightpblk *light_pblk = NULL;
 
 struct tgt_addr_format {
@@ -341,9 +341,9 @@ static struct ppa_addr addr_to_gen_ppa(struct f2fs_sb_info* sbi, block_t paddr){
 		ppa.g.ch = (paddr64 & lightpblk->ppaf.ch_mask) >> lightpblk->ppaf.ch_offset;
 		ppa.g.pl = (paddr64 & lightpblk->ppaf.pln_mask) >> lightpblk->ppaf.pln_offset;
 		ppa.g.sec = (paddr64 & lightpblk->ppaf.sec_mask) >> lightpblk->ppaf.sec_offset;
-		pr_notice("ppa.g.blk = 0x%x ,ppa.g.pg= 0x%x ,ppa.g.lun = 0x%x ,ppa.g.ch = 0x%x ,ppa.g.pl = 0x%x ,ppa.g.sec = 0x%x \n",ppa.g.blk,
-					ppa.g.pg,ppa.g.lun,ppa.g.ch,ppa.g.pl,ppa.g.sec);
-		pr_notice("ppa.ppa = 0x%llx\n",ppa.ppa);
+		//pr_notice("ppa.g.blk = 0x%x ,ppa.g.pg= 0x%x ,ppa.g.lun = 0x%x ,ppa.g.ch = 0x%x ,ppa.g.pl = 0x%x ,ppa.g.sec = 0x%x \n",ppa.g.blk,
+				//	ppa.g.pg,ppa.g.lun,ppa.g.ch,ppa.g.pl,ppa.g.sec);
+		//pr_notice("ppa.ppa = 0x%llx\n",ppa.ppa);
 		return ppa;
 
 }
@@ -429,6 +429,7 @@ static void tgt_end_io_write(struct nvm_rq* rqd)
 {
 	
 	nvm_dev_dma_free(rqd->dev->parent, rqd->meta_list, rqd->dma_meta_list);
+	//bio_put(rqd->bio);
 	kfree(rqd);
 	
 	//pr_notice("tgt_end_io_write()\n");
@@ -592,6 +593,9 @@ static int tgt_submit_page_write_sync(struct f2fs_sb_info *sbi, struct page* pag
 	struct nvm_rq rqd;
 	int ret;
 
+#ifdef CMO_DEBUG
+	//pr_notice("tgt_submit_page_write_sync(),pblkaddr = %d\n", pblkaddr);
+#endif
 	memset(&rqd, 0, sizeof(struct nvm_rq));
 
 	/*创建bio*/
@@ -724,10 +728,10 @@ static int tgt_submit_addr_erase_async(struct f2fs_sb_info* sbi, block_t paddr, 
 }
 
 static int tgt_mapping_erase(struct f2fs_sb_info* sbi, block_t paddr, uint32_t nr_blks){
-	struct page* zero_page = alloc_page(GFP_NOFS | __GFP_ZERO);
+	//struct page* zero_page = alloc_page(GFP_NOFS | __GFP_ZERO);
 	int ret = 0;
 	int i;
-	
+	/*
 	uint8_t* ptr_page_addr = (uint8_t*)page_address(zero_page);
 	lock_page (zero_page);
 	memset(ptr_page_addr,0,PAGE_SIZE);
@@ -741,7 +745,7 @@ static int tgt_mapping_erase(struct f2fs_sb_info* sbi, block_t paddr, uint32_t n
 	}
 	unlock_page (zero_page);
 	__free_pages (zero_page, 0);
-	
+	*/
 	ret = tgt_submit_addr_erase_async(sbi, paddr, nr_blks);
 	return ret;
 

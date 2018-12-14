@@ -1405,6 +1405,10 @@ static inline u32 f2fs_crc32(struct f2fs_sb_info *sbi, const void *address,
 static inline bool f2fs_crc_valid(struct f2fs_sb_info *sbi, __u32 blk_crc,
 				  void *buf, size_t buf_size)
 {
+#ifdef CMO_DEBUG
+	//pr_notice("f2fs_crc32(sbi, buf, buf_size) = %d\n",f2fs_crc32(sbi, buf, buf_size));
+	//pr_notice("blk_crc = %d\n",blk_crc);
+#endif
 	return f2fs_crc32(sbi, buf, buf_size) == blk_crc;
 }
 

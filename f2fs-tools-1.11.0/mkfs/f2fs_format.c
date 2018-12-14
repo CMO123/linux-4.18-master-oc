@@ -65,6 +65,68 @@ struct amf_map_blk {
 static char nvm_dev_path[20] = "/dev/nvme0n1";
 static struct nvm_dev *nvmdev;
 static struct nvm_geo *nvmgeo;
+unsigned int NVM_GEO_MIN_WRITE_PAGE = 0;
+u64  nvm_head_pg = 0;//按道理，f2fs只有super_block会写入0，而super_block貌似不是用nvm写入的
+char * nvm_buf_w = NULL;
+size_t nvm_buf_w_nbytes = 0;
+unsigned int nvm_count_write_pg = 0;
+struct nvm_addr *nvm_write_addrs;
+int pmode;	//NVM_PLANE_SINGLE
+
+bool isCover(u64 cur){
+	if(nvm_head_pg/NVM_GEO_MIN_WRITE_PAGE == cur/NVM_GEO_MIN_WRITE_PAGE)
+		return true;
+	return false;
+}
+
+
+//由于所有都是写入1个addr，所以naddrs没有考虑
+int nvm_ocssd_cmd_write(struct nvm_dev *dev, u64 lblkaddr, int naddrs, const void *data, struct nvm_ret *ret)
+{ int i;
+	if(nvm_buf_w == NULL){
+		nvm_buf_w = nvm_buf_alloc(dev, nvm_buf_w_nbytes, NULL);
+		memset(nvm_buf_w, 0x00, nvm_buf_w_nbytes);
+		if(!nvm_buf_w){
+			dbg_log("nvm_buf_alloc() failed\n");
+			return 1;
+		}
+
+	}
+	if(!isCover(lblkaddr) || nvm_count_write_pg >= NVM_GEO_MIN_WRITE_PAGE || naddrs==0){//下刷，并重新分配buf
+		if(nvm_count_write_pg != 0){//buf_w中有数据，应该下刷		
+			for(i = 0; i < NVM_GEO_MIN_WRITE_PAGE; i++){
+			nvm_write_addrs[i] = nvm_addr_dev2gen(dev, nvm_head_pg + i);
+			}
+			//dbg_log("nvm_write_addrs[0].ppa = 0x%llx\n",nvm_write_addrs[0].ppa);
+			int res = nvm_cmd_write(dev, nvm_write_addrs, NVM_GEO_MIN_WRITE_PAGE, nvm_buf_w, NULL, pmode, ret);
+			if(res < 0){
+				dbg_log("nvm_cmd_write failure\n");
+				return 1;
+			}
+		
+			//nvm_buf_w置位
+			memset(nvm_buf_w, 0x00, nvm_buf_w_nbytes);
+			nvm_head_pg = 0;
+			nvm_count_write_pg = 0;	
+		}		
+	}
+
+	if(naddrs == 0)
+		return 0;
+				
+	if(nvm_head_pg == 0 && nvm_count_write_pg == 0){
+		nvm_head_pg = lblkaddr/NVM_GEO_MIN_WRITE_PAGE * NVM_GEO_MIN_WRITE_PAGE;
+	}
+
+	memcpy(nvm_buf_w + (lblkaddr % NVM_GEO_MIN_WRITE_PAGE) * nvmgeo->sector_nbytes, data, 4096);	
+	nvm_count_write_pg++;
+	
+	return 0;
+}
+
+
+
+
 #endif
 
 
@@ -892,8 +954,9 @@ dbg_log("crc = %d\n", crc);
 
 	struct nvm_ret nvmret;
 	struct nvm_addr tempaddr;
-	tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
-	if(nvm_cmd_write(nvmdev, &tempaddr, 1, cp, NULL, 1, &nvmret)){
+	//tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
+	//if(nvm_cmd_write(nvmdev, &tempaddr, 1, cp, NULL, 1, &nvmret)){
+	if(nvm_ocssd_cmd_write(nvmdev, _meta_log_blkofs_2, 1, cp, &nvmret)){
 		MSG(1, "\tError: While writing the cp to disk!!!\n");
 		goto free_cp_payload;
 	}
@@ -903,8 +966,9 @@ dbg_log("crc = %d\n", crc);
 		cp_seg_blk++;
 	dbg_log("\n----\n");
 	dbg_log("write cp_payload at cp_seg_blk = %u ==>  _meta_log_blkofs_2=%u\n",cp_seg_blk, _meta_log_blkofs_2);
-	tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
-		if(nvm_cmd_write(nvmdev, &tempaddr, 1, cp_payload, NULL, 1, &nvmret)){
+	//tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
+	//if(nvm_cmd_write(nvmdev, &tempaddr, 1, cp_payload, NULL, 1, &nvmret)){
+		if(nvm_ocssd_cmd_write(nvmdev, _meta_log_blkofs_2, 1, cp_payload, &nvmret)){
 			MSG(1, "\tError: While zeroing out the sit bitmap area "
 					"on disk!!!\n");
 			goto free_cp_payload;
@@ -1054,8 +1118,9 @@ dbg_log("crc = %d\n", crc);
 			_meta_log_blkofs_2);
 	dbg_log("\n----\n");
 	dbg_log("[W] Writing Segment summary for HOT/WARM/COLD_DATA, cp_seg_blk = %u -->_meta_log_blkofs_2 = %u\n",cp_seg_blk,_meta_log_blkofs_2);
-	tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
-	if(nvm_cmd_write(nvmdev, &tempaddr, 1, sum_compact, NULL, 1, &nvmret)){
+	//tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
+	//if(nvm_cmd_write(nvmdev, &tempaddr, 1, sum_compact, NULL, 1, &nvmret)){
+	if(nvm_ocssd_cmd_write(nvmdev, _meta_log_blkofs_2, 1, sum_compact, &nvmret)){
 		MSG(1, "\tError: While writing the sum_blk to disk!!!\n");
 		goto free_cp_payload;
 	}
@@ -1096,8 +1161,9 @@ dbg_log("crc = %d\n", crc);
 				_meta_log_blkofs_2);
 		dbg_log("\n----\n");
 		dbg_log("[W] Writing Segment summary for HOT_NODE, at cp_seg_blk = %u --> _meta_log_blkofs_2 = %u\n",cp_seg_blk,_meta_log_blkofs_2);
-		tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
-		if(nvm_cmd_write(nvmdev, &tempaddr, 1, sum, NULL, 1, &nvmret)){
+		//tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
+		//if(nvm_cmd_write(nvmdev, &tempaddr, 1, sum, NULL, 1, &nvmret)){
+		if(nvm_ocssd_cmd_write(nvmdev, _meta_log_blkofs_2, 1, sum, &nvmret)){
 			MSG(1, "\tError: While writing the sum_blk to disk!!!\n");
 			goto free_cp_payload;
 		}
@@ -1122,8 +1188,9 @@ dbg_log("crc = %d\n", crc);
 				_meta_log_blkofs_2);
 	dbg_log("\n----\n");
 	dbg_log("[W] Writing Segment summary for WARM_NODE,at cp_seg_blk = %u --> _meta_log_blkofs_2 = %u\n",cp_seg_blk,_meta_log_blkofs_2);
-	tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
-	if(nvm_cmd_write(nvmdev, &tempaddr, 1, sum, NULL, 1, &nvmret)){
+	//tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
+	//if(nvm_cmd_write(nvmdev, &tempaddr, 1, sum, NULL, 1, &nvmret)){
+	if(nvm_ocssd_cmd_write(nvmdev, _meta_log_blkofs_2, 1, sum, &nvmret)){
 			MSG(1, "\tError: While writing the sum_blk to disk!!!\n");
 			goto free_cp_payload;
 		}
@@ -1149,8 +1216,9 @@ dbg_log("crc = %d\n", crc);
 			_meta_log_blkofs_2);
 	dbg_log("\n----\n");
 	dbg_log("[W] write  segment summary for cold_node, at cp_seg_blk = %u --> _meta_log_blkofs_2 = %u\n",cp_seg_blk,_meta_log_blkofs_2);
-	tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
-	if(nvm_cmd_write(nvmdev, &tempaddr, 1, sum, NULL, 1, &nvmret)){
+	//tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
+	//if(nvm_cmd_write(nvmdev, &tempaddr, 1, sum, NULL, 1, &nvmret)){
+	if(nvm_ocssd_cmd_write(nvmdev, _meta_log_blkofs_2, 1, sum, &nvmret)){
 		MSG(1, "\tError: While writing the sum_blk to disk!!!\n");
 		goto free_cp_payload;
 	}
@@ -1170,8 +1238,9 @@ dbg_log("crc = %d\n", crc);
 		DBG(1, "\tWriting cp page2, at offset 0x%08"PRIx64"\n", _meta_log_blkofs_2);
 		dbg_log("\n----\n");
 		dbg_log("[W] Writing cp page2, at cp_seg_blk = %u -->_meta_log_blkofs_2 = %u\n",cp_seg_blk,_meta_log_blkofs_2);
-		tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
-		if(nvm_cmd_write(nvmdev, &tempaddr, 1, cp, NULL, 1, &nvmret)){
+		//tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
+		//if(nvm_cmd_write(nvmdev, &tempaddr, 1, cp, NULL, 1, &nvmret)){
+		if(nvm_ocssd_cmd_write(nvmdev, _meta_log_blkofs_2, 1, cp, &nvmret)){
 			MSG(1, "\tError: While writing the cp to disk!!!\n");
 			goto free_cp_payload;
 		}
@@ -1204,9 +1273,9 @@ dbg_log("crc = %d\n", crc);
 		for (i = 0; i < nat_bits_blocks; i++) {
 			_meta_log_blkofs_2++;
 			dbg_log("cp_seg_blk+i = %u -->_meta_log_blkofs_2 = %u\n",cp_seg_blk+i,_meta_log_blkofs_2);
-		tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
-		if(nvm_cmd_write(nvmdev, &tempaddr, 1, nat_bits + i *
-						F2FS_BLKSIZE, NULL, 1, &nvmret)){
+		//tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
+		//if(nvm_cmd_write(nvmdev, &tempaddr, 1, nat_bits + i *	F2FS_BLKSIZE, NULL, 1, &nvmret)){
+		if(nvm_ocssd_cmd_write(nvmdev, _meta_log_blkofs_2, 1, nat_bits + i * F2FS_BLKSIZE, &nvmret)){
 				MSG(1, "\tError: write NAT bits to disk!!!\n");
 				goto free_cp_payload;
 			}
@@ -1239,8 +1308,9 @@ dbg_log("crc = %d\n", crc);
 				cp_seg_blk);
 	dbg_log("\n---\n");
 	dbg_log("[W] Writing cp page 1 of checkpoint pack 2 at cp_seg_blk = %u --> _meta_log_blkofs_2 = %u\n",cp_seg_blk,_meta_log_blkofs_2);
-	tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
-	if(nvm_cmd_write(nvmdev, &tempaddr, 1, cp, NULL, 1, &nvmret)){
+	//tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
+	//if(nvm_cmd_write(nvmdev, &tempaddr, 1, cp, NULL, 1, &nvmret)){
+	if(nvm_ocssd_cmd_write(nvmdev, _meta_log_blkofs_2, 1, cp, &nvmret)){
 		MSG(1, "\tError: While writing the cp to disk!!!\n");
 		goto free_cp_payload;
 	}
@@ -1250,8 +1320,9 @@ dbg_log("crc = %d\n", crc);
 		_meta_log_blkofs_2++;
 		cp_seg_blk++;
 		dbg_log(" cp_seg_blk = %u --> _meta_log_blkofs_2 = %u\n", cp_seg_blk, _meta_log_blkofs_2);
-		tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
-		if(nvm_cmd_write(nvmdev, &tempaddr, 1, cp_payload, NULL, 1, &nvmret)){
+		//tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
+		//if(nvm_cmd_write(nvmdev, &tempaddr, 1, cp_payload, NULL, 1, &nvmret)){
+		if(nvm_ocssd_cmd_write(nvmdev, _meta_log_blkofs_2, 1, cp_payload, &nvmret)){
 			MSG(1, "\tError: While zeroing out the sit bitmap area "
 					"on disk!!!\n");
 			goto free_cp_payload;
@@ -1286,8 +1357,9 @@ dbg_log("crc = %d\n", crc);
 				cp_seg_blk);
 	dbg_log("\n----\n");
 	dbg_log("[W] Writing cp page 2 of checkpoint pack 2 at cp_seg_blk = %u --> _meta_log_blkofs_2 = %u\n",cp_seg_blk, _meta_log_blkofs_2);
-	tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
-	if(nvm_cmd_write(nvmdev, &tempaddr, 1, cp, NULL, 1, &nvmret)){
+	//tempaddr = nvm_addr_dev2gen(nvmdev, _meta_log_blkofs_2);
+	//if(nvm_cmd_write(nvmdev, &tempaddr, 1, cp, NULL, 1, &nvmret)){
+	if(nvm_ocssd_cmd_write(nvmdev, _meta_log_blkofs_2, 1, cp, &nvmret)){
 		MSG(1, "\tError: While writing the cp to disk!!!\n");
 		goto free_cp_payload;
 	}
@@ -1333,8 +1405,9 @@ static int f2fs_write_super_block(void)
 	for (index = 0; index < 2; index++) {
 		dbg_log ("[W] super_blk: %u\t%u\t%u\n", (index * F2FS_BLKSIZE)/F2FS_BLKSIZE, F2FS_BLKSIZE/F2FS_BLKSIZE, 
 									(index * F2FS_BLKSIZE + F2FS_BLKSIZE)/F2FS_BLKSIZE);		
-		tempaddr = nvm_addr_dev2gen(nvmdev, index);
-		if(nvm_cmd_write(nvmdev, &tempaddr, 1, zero_buff, NULL, 1, &ret)){
+		//tempaddr = nvm_addr_dev2gen(nvmdev, index);
+		//if(nvm_cmd_write(nvmdev, &tempaddr, 1, zero_buff, NULL, 1, &ret)){
+		if(nvm_ocssd_cmd_write(nvmdev, index, 1, zero_buff, &ret)){
 			MSG(1, "\tError: While while writing supe_blk "
 					"on disk!!! index : %d\n", index);
 			free(zero_buff);
@@ -1531,8 +1604,9 @@ static int f2fs_write_root_inode(void)
 				dbg_log("在main_blkaddr+c.cur_seg[CURSEG_HOT_NODE] *c.blks_per_seg后写入raw_node\n");
 
 	struct nvm_ret ret;
-	struct nvm_addr tempaddr = nvm_addr_dev2gen(nvmdev, main_area_node_seg_blk_offset);
-	if (nvm_cmd_write(nvmdev, &tempaddr, 1, raw_node, NULL, 1, &ret)) {
+	
+	
+	if (nvm_ocssd_cmd_write(nvmdev, main_area_node_seg_blk_offset, 1, raw_node, &ret)) {
 		MSG(1, "\tError: While writing the raw_node to disk!!!\n");
 		free(raw_node);
 		return -1;
@@ -1615,9 +1689,10 @@ static int f2fs_write_default_quota(int qtype, unsigned int blkaddr,
 	dbg_log("写入quota file content, blkaddr = %u, blkaddr+1 = %u\n",blkaddr, blkaddr+1);
 	struct nvm_ret ret;
 	struct nvm_addr tempaddr,tempaddr2;
-	tempaddr = nvm_addr_dev2gen(nvmdev, blkaddr);
-	tempaddr2 = nvm_addr_dev2gen(nvmdev, blkaddr+1);
-	if(nvm_cmd_write(nvmdev, &tempaddr, 1, filebuf, NULL, 1, &ret) || nvm_cmd_write(nvmdev, &tempaddr2, 1, filebuf + F2FS_BLKSIZE, NULL, 1, &ret)){
+	//tempaddr = nvm_addr_dev2gen(nvmdev, blkaddr);
+	//tempaddr2 = nvm_addr_dev2gen(nvmdev, blkaddr+1);
+	//if(nvm_cmd_write(nvmdev, &tempaddr, 1, filebuf, NULL, 1, &ret) || nvm_cmd_write(nvmdev, &tempaddr2, 1, filebuf + F2FS_BLKSIZE, NULL, 1, &ret)){
+	if(nvm_ocssd_cmd_write(nvmdev, blkaddr, 1, filebuf, &ret) || nvm_ocssd_cmd_write(nvmdev, blkaddr+1, 1, filebuf + F2FS_BLKSIZE, &ret)){
 		MSG(1, "\tError: While writing the quota_blk to disk!!!\n");
 				free(filebuf);
 				return -1;
@@ -1735,8 +1810,9 @@ static int f2fs_write_qf_inode(int qtype)
 	dbg_log("qtype = %u\n",qtype);
 	dbg_log("将quota inode写入main_area_node_seg_blk_offset = c.cur_seg[CURSEG_HOT_NODE] * c.blks_per_seg + qtype + 1 = %u\n", main_area_node_seg_blk_offset);
 	struct nvm_ret ret;
-	struct nvm_addr tempaddr = nvm_addr_dev2gen(nvmdev, main_area_node_seg_blk_offset);
-	if(nvm_cmd_write(nvmdev, &tempaddr, 1, raw_node, NULL, 1, &ret))
+	//struct nvm_addr tempaddr = nvm_addr_dev2gen(nvmdev, main_area_node_seg_blk_offset);
+	//if(nvm_cmd_write(nvmdev, &tempaddr, 1, raw_node, NULL, 1, &ret))
+	if(nvm_ocssd_cmd_write(nvmdev,main_area_node_seg_blk_offset,1,raw_node, &ret))
 	{
 		MSG(1, "\tError: While writing the raw_node to disk!!!\n");
 		free(raw_node);
@@ -1817,7 +1893,8 @@ static int f2fs_update_nat_root(void)
 							F2FS_BLKSIZE/F2FS_BLKSIZE, _meta_log_blkofs_2);
 	struct nvm_ret ret;
 	struct nvm_addr tempaddr = nvm_addr_dev2gen(nvmdev, nat_seg_blk_offset);
-	if (nvm_cmd_write(nvmdev, &tempaddr, 1, nat_blk, NULL, 1, &ret)) {//因为要异地更新，所以首先第一个写入的是2048
+	//if (nvm_cmd_write(nvmdev, &tempaddr, 1, nat_blk, NULL, 1, &ret)) {//因为要异地更新，所以首先第一个写入的是2048
+	if(nvm_ocssd_cmd_write(nvmdev, nat_seg_blk_offset, 1, nat_blk, &ret)){
 		MSG(1, "\tError: While writing the nat_blk set0 to disk!\n");
 		free(nat_blk);
 		return -1;
@@ -1872,8 +1949,9 @@ static block_t f2fs_add_default_dentry_lpf(void)
 	dbg_log("f2fs_add_default_dentry_lpf, data_blk_offset = %u\n",data_blk_offset);	
 	dbg_log("写入main_blkaddr + c.cur_seg[CURSEG_HOT_DATA] * c.blks_per_seg + 1 + c.quota_dnum\n ");
 	struct nvm_ret ret;
-	struct nvm_addr tempaddr = nvm_addr_dev2gen(nvmdev, data_blk_offset);
-	if(nvm_cmd_write(nvmdev, &tempaddr, 1, dent_blk, NULL, 1, &ret)){
+	//struct nvm_addr tempaddr = nvm_addr_dev2gen(nvmdev, data_blk_offset);
+	//if(nvm_cmd_write(nvmdev, &tempaddr, 1, dent_blk, NULL, 1, &ret)){
+	if(nvm_ocssd_cmd_write(nvmdev, data_blk_offset, 1, dent_blk, &ret)){
 		MSG(1, "\tError While writing the dentry_blk to disk!!!\n");
 		free(dent_blk);
 		return 0;
@@ -1978,8 +2056,9 @@ static int f2fs_write_lpf_inode(void)
 	dbg_log("Writing lost+found inode (hot node)，即raw_node,到main_area_node_seg_blk_offset = main_blkaddr + c.cur_seg[CURSEG_HOT_NODE] * \
 			c.blks_per_seg + c.quota_inum + 1 = %u\n",main_area_node_seg_blk_offset);
 	struct nvm_ret ret;
-	struct nvm_addr tempaddr = nvm_addr_dev2gen(nvmdev, main_area_node_seg_blk_offset);
-	if(nvm_cmd_write(nvmdev, &tempaddr, 1, raw_node, NULL, 1, &ret)){
+	//struct nvm_addr tempaddr = nvm_addr_dev2gen(nvmdev, main_area_node_seg_blk_offset);
+	//if(nvm_cmd_write(nvmdev, &tempaddr, 1, raw_node, NULL, 1, &ret)){
+	if(nvm_ocssd_cmd_write(nvmdev, main_area_node_seg_blk_offset, 1, raw_node, &ret)){
 		MSG(1, "\tError: While writing the raw_node to disk!!!\n");
 		err = -1;
 		goto exit;
@@ -2061,8 +2140,9 @@ static int f2fs_add_default_dentry_root(void)
 	dbg_log("写入root_inode的dentry到main_blkaddr+c.cur_seg[CURSEG_HOT_DATA]*c.blks_per_seg中\n");
 
 	struct nvm_ret ret;
-	struct nvm_addr tempaddr = nvm_addr_dev2gen(nvmdev, data_blk_offset);
-	if (nvm_cmd_write(nvmdev, &tempaddr, 1, dent_blk, NULL, 1, &ret)) {
+	//struct nvm_addr tempaddr = nvm_addr_dev2gen(nvmdev, data_blk_offset);
+	//if (nvm_cmd_write(nvmdev, &tempaddr, 1, dent_blk, NULL, 1, &ret)) {
+	if(nvm_ocssd_cmd_write(nvmdev, data_blk_offset, 1, dent_blk, &ret)){
 			MSG(1, "\tError: While writing the dentry_blk to disk!!!\n");
 			free(dent_blk);
 			return -1;
@@ -2157,6 +2237,15 @@ int f2fs_format_device(void)
 				perror("error :nvm_dev_open\n");
 			//nvm_dev_pr(nvmdev);
 			nvmgeo = nvm_dev_get_geo(nvmdev);
+
+
+			NVM_GEO_MIN_WRITE_PAGE = nvmgeo->nplanes * nvmgeo->nsectors;
+			nvm_buf_w_nbytes = NVM_GEO_MIN_WRITE_PAGE * nvmgeo->sector_nbytes;
+			pmode = nvmgeo->nplanes;
+			nvm_write_addrs = (struct nvm_addr*)malloc(sizeof(struct nvm_addr) * NVM_GEO_MIN_WRITE_PAGE);
+			
+			dbg_log("NVM_GEO_MIN_WRITE_PAGE = %d, pmode = %d\n", NVM_GEO_MIN_WRITE_PAGE, pmode);
+			
 
 			/*
 			//测试读写
@@ -2300,6 +2389,14 @@ exit:
 		MSG(0, "\tError: Could not format the device!!!\n");		
 	}
 #ifdef AMF_SNAPSHOT
+		
+	
+	if(nvm_buf_w != NULL){
+		nvm_ocssd_cmd_write(nvmdev, 0, 0, NULL, NULL);
+		nvm_buf_free(nvmdev, nvm_buf_w);
+	}
+
+	free(nvm_write_addrs);	
 	nvm_dev_close(nvmdev);
 #endif
 
@@ -2308,6 +2405,24 @@ exit:
 
 
 #ifdef AMF_SNAPSHOT
+
+size_t nvm_buf_diff_qrk(char *expected, char *actual, size_t nbytes,
+			size_t nbytes_oob,
+			size_t nbytes_qrk)
+{
+	size_t diff = 0,i;
+
+	for (i = 0; i < nbytes; ++i) {
+		if ((i % nbytes_oob) < nbytes_qrk)
+			continue;
+
+		if (expected[i] != actual[i])
+			++diff;
+	}
+
+	return diff;
+}
+
 int f2fs_write_snapshot(void)
 {
 	/*__le32* ptr_mapping_table = NULL;*/
@@ -2436,11 +2551,15 @@ int f2fs_write_snapshot(void)
 
 	_mapping_byteofs = ((c.segs_per_sec * c.blks_per_seg) * NR_SUPERBLK_SECS); 
 	struct nvm_ret ret;
-	struct nvm_addr tempaddr;
+	//struct nvm_addr tempaddr;
 	for (loop = 0; loop < nr_map_blks; loop++) {//将mapping写入设备
 		dbg_log("[W] mapping_table:\t%u\t%u\n", _mapping_byteofs, F2FS_BLKSIZE);
-		tempaddr = nvm_addr_dev2gen(nvmdev, _mapping_byteofs);
-		if (nvm_cmd_write(nvmdev, &tempaddr, 1, (__le32*)(ptr_map_blks + loop), NULL, 1, &ret)) {
+		//tempaddr = nvm_addr_dev2gen(nvmdev, _mapping_byteofs);
+		//if (nvm_cmd_write(nvmdev, &tempaddr, 1, (__le32*)(ptr_map_blks + loop), NULL, 1, &ret)) {
+	struct amf_map_blk * ptr = (ptr_map_blks+loop);
+		dbg_log("ptr->magic = %d,ptr->ver = %d,ptr->index = %d,ptr->mapping[0] = %d \n", ptr->magic,ptr->ver, ptr->index, ptr->mapping[0]);
+	
+		if(nvm_ocssd_cmd_write(nvmdev, _mapping_byteofs, 1, (__le32*)(ptr_map_blks + loop), &ret)){
 			MSG(0, "\tError: While writing the mapping table to disk!!!\n");
 			return -1;
 		}
@@ -2451,10 +2570,14 @@ int f2fs_write_snapshot(void)
 		}
 	*/
 		
-		struct amf_map_blk * ptr = (ptr_map_blks+loop);
+		_mapping_byteofs ++;
+	}
+	
+/*
+	struct amf_map_blk * ptr = (ptr_map_blks+0);
 		dbg_log("ptr->magic = %d,ptr->ver = %d,ptr->index = %d,ptr->mapping[0] = %d \n", ptr->magic,ptr->ver, ptr->index, ptr->mapping[0]);
 		
-		/*
+		                 
 		struct amf_map_blk* ptrread;
 		if ((ptrread = (struct amf_map_blk*)malloc (
 			sizeof (struct amf_map_blk) * 1)) == NULL) {
@@ -2462,25 +2585,91 @@ int f2fs_write_snapshot(void)
 		return -1;
 		} 
 		memset (ptrread, (__le32)0, sizeof (struct amf_map_blk));
-		if (dev_read_block(ptrread,_mapping_byteofs)) {
-			MSG(0, "\tError: While writing the mapping table to disk!!!\n");
-			return -1;
+		//if (dev_read_block(ptrread,_mapping_byteofs)) {
+		//	MSG(0, "\tError: While writing the mapping table to disk!!!\n");
+		//	return -1;
+		//}
+		_mapping_byteofs = ((c.segs_per_sec * c.blks_per_seg) * NR_SUPERBLK_SECS);
+		dbg_log("_mapping_byteofs = %d\n",_mapping_byteofs);
+		struct nvm_addr temp = nvm_addr_dev2gen(nvmdev, _mapping_byteofs);
+		struct nvm_ret tempret;
+		int res = nvm_cmd_read(nvmdev, &temp, 1, ptrread, NULL, 1, &tempret);
+		if(res < 0){
+			dbg_log("res = %d\n",res);
 		}
-		dbg_log("ptrread->magic=%u,ptrread->index=%u,ptrread->mapping[0]=%u\n",ptrread->magic,ptrread->index,ptrread->mapping[0]);
+		
+		dbg_log("ptrread->magic=%u,ptrread->index=%u,ptrread->mapping[0]=%u\n",ptrread->magic,ptrread->index,ptrread->mapping[1]);
 		free(ptrread);
-		*/
+*/
 
-		_mapping_byteofs ++;
-	}
-	/*
-	dbg_log ("[W] mapping_table:\t%u\t%u\n",
-		_mapping_blkofs, (sizeof (__le32) * nr_mapping_entries + F2FS_BLKSIZE - 1) / F2FS_BLKSIZE);
 
-	if (dev_write(ptr_mapping_table, _mapping_blkofs * F2FS_BLKSIZE, sizeof (__le32) * nr_mapping_entries)) {
-		MSG(0, "\tError: While writing the mapping table to disk!!!\n");
-		return -1;
-	}
-	*/
+
+/*测试读写接口
+	char *buf_w = NULL, *buf_r = NULL;
+	const int naddrs = nvmgeo->nplanes * nvmgeo->nsectors;
+	struct nvm_addr addrs[naddrs];
+	struct nvm_addr blk_addr = { .val = 0 };
+	ssize_t res;
+	size_t buf_w_nbytes, buf_r_nbytes;
+	int pmode = NVM_FLAG_PMODE_SNGL;
+	int failed = 1;
+	int i;
+	
+	buf_w_nbytes = naddrs * nvmgeo->sector_nbytes;
+	buf_r_nbytes = nvmgeo->sector_nbytes;
+
+	buf_w = nvm_buf_alloc(nvmdev, buf_w_nbytes, NULL); 
+	nvm_buf_fill(buf_w, buf_w_nbytes);
+
+	buf_r = nvm_buf_alloc(nvmdev, buf_r_nbytes, NULL);
+	
+		for ( i = 0; i < naddrs; ++i) {
+			addrs[i].ppa = blk_addr.ppa;
+
+			addrs[i].g.sec = i % nvmgeo->nsectors;
+			addrs[i].g.pl = (i / nvmgeo->nsectors) % nvmgeo->nplanes;
+		}
+		res = nvm_cmd_write(nvmdev, addrs, naddrs, buf_w,
+				    NULL, pmode, &ret);
+
+
+	size_t pl,sec;
+	
+		for (  pl = 0; pl < nvmgeo->nplanes; ++pl) {
+			for ( sec = 0; sec < nvmgeo->nsectors; ++sec) {
+				struct nvm_addr addr;
+				size_t buf_diff = 0;
+
+				int bw_offset = sec * nvmgeo->sector_nbytes + \
+						pl * nvmgeo->nsectors * \
+						nvmgeo->sector_nbytes;
+				
+				addr.ppa = blk_addr.ppa;
+				addr.g.pl = pl;
+				addr.g.sec = sec;
+
+				memset(buf_r, 0, buf_r_nbytes);
+		
+
+				res = nvm_cmd_read(nvmdev, &addr, 1, buf_r,
+						     NULL, pmode, &ret);
+
+				buf_diff = nvm_buf_diff_qrk(buf_r,
+							    buf_w + bw_offset,
+							    buf_r_nbytes,
+							    nvmgeo->g.meta_nbytes,
+							    4);
+				dbg_log("bur_r = %s\n", buf_r);
+				if (buf_diff)
+					dbg_log("Read failure: buffer mismatch");
+			}
+		}
+	
+	nvm_buf_free(nvmdev, buf_r);
+	nvm_buf_free(nvmdev, buf_w);
+					
+*/
+	
 
 	/* (5) free the memory space */
 	free (ptr_map_blks);
