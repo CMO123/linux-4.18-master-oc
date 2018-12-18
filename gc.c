@@ -1097,12 +1097,11 @@ gc_more:
 		ret = -ENODATA;
 		goto stop;
 	}
-#ifdef AMF_TRIM
+
 		seg_freed = do_garbage_collect(sbi, segno, &gc_list, gc_type);
 		//f2fs_issue_discard(sbi, START_BLOCK(sbi, segno), sbi->blocks_per_seg);
+#ifdef AMF_TRIM
 		ret = tgt_submit_addr_erase_async(sbi, START_BLOCK(sbi, segno), sbi->blocks_per_seg);
-#else
-		seg_freed = do_garbage_collect(sbi, segno, &gc_list, gc_type);
 #endif
 
 	if (gc_type == FG_GC && seg_freed == sbi->segs_per_sec)
@@ -1212,13 +1211,13 @@ gc_more:
 		ret = -ENODATA;
 		goto stop;
 	}
-#ifdef AMF_TRIM
+
 		seg_freed = do_garbage_collect(sbi, segno, &gc_list, gc_type);
 		//f2fs_issue_discard(sbi, START_BLOCK(sbi, segno), sbi->blocks_per_seg);
+#ifdef AMF_TRIM
 		ret = tgt_submit_addr_erase_async(sbi, START_BLOCK(sbi, segno), sbi->blocks_per_seg);
-#else
-		seg_freed = do_garbage_collect(sbi, segno, &gc_list, gc_type);
 #endif
+
 
 	if (gc_type == FG_GC && seg_freed == sbi->segs_per_sec)
 		sec_freed++;

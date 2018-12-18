@@ -732,6 +732,7 @@ static int f2fs_init_sit_area(void)
 		dbg_log("sit_seg_addr_blk = %u\n", sit_seg_addr/blk_size);
 		struct nvm_ret ret;
 		struct nvm_addr tempaddr = nvm_addr_dev2gen(nvmdev, sit_seg_addr);
+		tempaddr.g.pl = 0; tempaddr.g.sec=0;tempaddr.g.pg=0;
 		if(nvm_cmd_erase(nvmdev, &tempaddr, 1,NULL, 1, &ret)){
 			MSG(1, "\tError: While zeroing out the sit area "
 					"on disk!!!\n");
@@ -797,6 +798,7 @@ static int f2fs_init_nat_area(void)
 			free(nat_buf);
 			return -1;
 		}
+	
 #else
 
 		if (dev_fill(nat_buf, nat_seg_addr, seg_size)) {

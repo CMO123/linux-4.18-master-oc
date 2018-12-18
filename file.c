@@ -2912,6 +2912,7 @@ long f2fs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	}
 }
 
+
 static ssize_t f2fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct file *file = iocb->ki_filp;
@@ -2924,11 +2925,13 @@ static ssize_t f2fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	if ((iocb->ki_flags & IOCB_NOWAIT) && !(iocb->ki_flags & IOCB_DIRECT))
 		return -EINVAL;
 
+
 	if (!inode_trylock(inode)) {
-		if (iocb->ki_flags & IOCB_NOWAIT)
-			return -EAGAIN;
-		inode_lock(inode);
-	}
+			if (iocb->ki_flags & IOCB_NOWAIT)
+				return -EAGAIN;
+			inode_lock(inode);
+		}
+
 
 	ret = generic_write_checks(iocb, from); //返回写入数目，字节数
 	if (ret > 0) {
@@ -2945,8 +2948,8 @@ static ssize_t f2fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 						iov_iter_count(from)) ||
 					f2fs_has_inline_data(inode) ||
 					f2fs_force_buffered_io(inode, WRITE)) {
-						clear_inode_flag(inode,
-								FI_NO_PREALLOC);
+						clear_inode_flag(inode,FI_NO_PREALLOC);
+						//test_clear_inode_flag(inode,FI_NO_PREALLOC);
 						inode_unlock(inode);
 						return -EAGAIN;
 				}
@@ -2964,18 +2967,21 @@ static ssize_t f2fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 		}
 		ret = __generic_file_write_iter(iocb, from);
 		clear_inode_flag(inode, FI_NO_PREALLOC);
-
+		//test_clear_inode_flag(inode, FI_NO_PREALLOC);
+		
 		/* if we couldn't write data, we should deallocate blocks. */
 		if (preallocated && i_size_read(inode) < target_size)
 			f2fs_truncate(inode);
 
 		if (ret > 0)
+			//test_f2fs_update_iostat(F2FS_I_SB(inode), APP_WRITE_IO, ret);
 			f2fs_update_iostat(F2FS_I_SB(inode), APP_WRITE_IO, ret);
 	}
 	inode_unlock(inode);
 
 	if (ret > 0)
 		ret = generic_write_sync(iocb, ret);
+		//ret = test_generic_write_sync(iocb,ret);
 	return ret;
 }
 

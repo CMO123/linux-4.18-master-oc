@@ -2877,10 +2877,10 @@ try_onemore:
 	
 #ifdef AMF_PMU
 
-#ifdef CMO_DEBUG
+
 	pr_notice("The size of a checkpoint = %ld (B)\n",sizeof(struct f2fs_checkpoint));//193 B
 	pr_notice("sbi->s_lightpblk->min_write_pgs = %d\n",sbi->s_lightpblk->min_write_pgs);
-#endif
+
 	amf_pmu_create(sbi);
 				
 #endif
