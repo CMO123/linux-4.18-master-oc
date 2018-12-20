@@ -274,7 +274,7 @@ static inline void __submit_bio(struct f2fs_sb_info *sbi,
 	if (!is_read_io(bio_op(bio))) {
 		unsigned int start;
 
-pr_notice("__submit_bio(org),lblk = %d, nr_secs = %d\n", bio->bi_iter.bi_sector >> F2FS_LOG_SECTORS_PER_BLOCK,bio->bi_iter.bi_size / F2FS_BLKSIZE);
+//pr_notice("__submit_bio(org),lblk = %d, nr_secs = %d\n", bio->bi_iter.bi_sector >> F2FS_LOG_SECTORS_PER_BLOCK,bio->bi_iter.bi_size / F2FS_BLKSIZE);
 	
 	
 #ifndef CMO_OCSSD

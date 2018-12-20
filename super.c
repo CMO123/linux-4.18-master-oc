@@ -2869,7 +2869,7 @@ try_onemore:
 	sbi->s_lightpblk = lightpblk_fs_create(sb, "mylightpblk");
 	
 	//pr_notice("F2FS_IO_SIZE(sbi) = %d\n",F2FS_IO_SIZE(sbi));
-	F2FS_OPTION(sbi).write_io_size_bits = 1;
+	//F2FS_OPTION(sbi).write_io_size_bits = 1;
 	//pr_notice("F2FS_IO_SIZE(sbi) = %d, F2FS_IO_SIZE_KB(sbi) = %d\n",F2FS_IO_SIZE(sbi),F2FS_IO_SIZE_KB(sbi));
 	
 #endif
