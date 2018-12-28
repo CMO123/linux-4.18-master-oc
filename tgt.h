@@ -705,9 +705,14 @@ static int tgt_submit_addr_erase_async(struct f2fs_sb_info* sbi, block_t paddr, 
 	if(nr_blks == pg_per_sec){//每次擦除一个section，512对应设备一个line中的4个blk
 		erase_num = 1;
 		//pr_notice("erase 1 blk\n");
+	}else if(nr_blks > pg_per_sec){
+		erase_num = nr_blks/pg_per_sec+(nr_blks%pg_per_sec==0? 0:1);
 	}
 	
 	//有一个大问题，就是数据的组织，segment的粒度，烦，先暂时按一个ppa一个ppa地擦除
+#ifdef AMF_PMU
+	atomic64_add(erase_num, &sbi->pmu.erase_count);
+#endif
 	for(i = 0; i < erase_num; i++){
 		struct ppa_addr  ppa = addr_ppa32_to_ppa64(sbi, paddr+i);
 

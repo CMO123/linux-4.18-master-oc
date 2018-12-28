@@ -1012,6 +1012,9 @@ static void __submit_discard_cmd(struct f2fs_sb_info *sbi,
 			bio->bi_private = dc;
 			bio->bi_end_io = f2fs_submit_discard_endio;
 			bio->bi_opf |= flag;
+	#ifdef AMF_PMU
+			atomic64_add(bio_sectors (bio) / 8, &sbi->pmu.discard_count);
+	#endif
 			submit_bio(bio);
 			list_move_tail(&dc->list, wait_list);
 			__check_sit_bitmap(sbi, dc->start, dc->start + dc->len);

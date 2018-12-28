@@ -1113,18 +1113,28 @@ enum fsync_mode {
 
 #ifdef AMF_PMU
 struct amf_pmu {
-	atomic64_t norm_r;
-	atomic64_t norm_w;
-	atomic64_t meta_r;
-	atomic64_t meta_w;
-	atomic64_t fs_gc_rw;
-	atomic64_t metalog_gc_rw;
-	atomic64_t mapping_w;
-	atomic64_t time_norm_r;
-	atomic64_t time_norm_w;
-	atomic64_t ckp_w;
+		atomic64_t norm_r;//1
+		atomic64_t norm_w;//1
+		atomic64_t norm_r_sync;//0
+		atomic64_t norm_w_sync;//0
+		
+		atomic64_t meta_r;//1
+		atomic64_t meta_w;//1
+		atomic64_t meta_r_sync;//0
+		atomic64_t meta_w_sync;//0
+		
+		atomic64_t pad_meta_w;//0
+		atomic64_t pad_norm_w;//0
+		atomic64_t padded_writes;//1
+		
+		atomic64_t fs_gc_rw;//1,gc次数
+		atomic64_t metalog_gc_rw;//metalog_gc次数
+		atomic64_t mapping_w;//1, 映射表写入大小
+		atomic64_t ckp_w;//chkp写入次数
+		atomic64_t erase_count;//1
+		atomic64_t discard_count;//1
 
-	struct timeval time_start;
+
 };
 	
 	

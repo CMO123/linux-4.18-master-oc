@@ -2868,9 +2868,15 @@ try_onemore:
 #ifdef CMO_OCSSD	
 	sbi->s_lightpblk = lightpblk_fs_create(sb, "mylightpblk");
 	
-	//pr_notice("F2FS_IO_SIZE(sbi) = %d\n",F2FS_IO_SIZE(sbi));
-	//F2FS_OPTION(sbi).write_io_size_bits = 1;
-	//pr_notice("F2FS_IO_SIZE(sbi) = %d, F2FS_IO_SIZE_KB(sbi) = %d\n",F2FS_IO_SIZE(sbi),F2FS_IO_SIZE_KB(sbi));
+	pr_notice("F2FS_IO_SIZE(sbi) = %d\n",F2FS_IO_SIZE(sbi));
+	//pr_notice("sbi->s_lightpblk->min_write_pgs = %d\n",sbi->s_lightpblk->min_write_pgs);
+	 if(sbi->s_lightpblk->min_write_pgs==2){
+		F2FS_OPTION(sbi).write_io_size_bits = 1;
+	}else if(sbi->s_lightpblk->min_write_pgs==4){
+		F2FS_OPTION(sbi).write_io_size_bits = 2;
+	}
+	
+	pr_notice("F2FS_IO_SIZE(sbi) = %d, F2FS_IO_SIZE_KB(sbi) = %d\n",F2FS_IO_SIZE(sbi),F2FS_IO_SIZE_KB(sbi));
 	
 #endif
 

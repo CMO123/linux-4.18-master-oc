@@ -303,6 +303,10 @@ static inline void __submit_bio(struct f2fs_sb_info *sbi,
 			lock_page(page);
 			if (bio_add_page(bio, page, PAGE_SIZE, 0) < PAGE_SIZE)
 				f2fs_bug_on(sbi, 1);
+
+#ifdef AMF_PMU
+	atomic64_add(1, &sbi->pmu.padded_writes);		
+#endif
 		}
 		/*
 		 * In the NODE case, we lose next block address chain. So, we

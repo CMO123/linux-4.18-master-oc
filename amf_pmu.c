@@ -34,26 +34,34 @@ void amf_pmu_create (struct f2fs_sb_info *sbi)
 
 	atomic64_set (&sbi->pmu.norm_r, 0);
 	atomic64_set (&sbi->pmu.norm_w, 0);
+	atomic64_set (&sbi->pmu.norm_r_sync, 0);
+	atomic64_set (&sbi->pmu.norm_w_sync, 0);
 	atomic64_set (&sbi->pmu.meta_r, 0);
 	atomic64_set (&sbi->pmu.meta_w, 0);
+	atomic64_set (&sbi->pmu.meta_r_sync, 0);
+	atomic64_set (&sbi->pmu.meta_w_sync, 0);
+
+	atomic64_set (&sbi->pmu.pad_meta_w, 0);
+	atomic64_set (&sbi->pmu.pad_norm_w, 0);
+	atomic64_set (&sbi->pmu.padded_writes, 0);
+	
 	atomic64_set (&sbi->pmu.fs_gc_rw, 0);
 	atomic64_set (&sbi->pmu.metalog_gc_rw, 0);
 	atomic64_set (&sbi->pmu.mapping_w, 0);
-	atomic64_set (&sbi->pmu.time_norm_r, 0);
-	atomic64_set (&sbi->pmu.time_norm_w, 0);
 	atomic64_set (&sbi->pmu.ckp_w, 0);
+	atomic64_set (&sbi->pmu.erase_count, 0);
+	atomic64_set (&sbi->pmu.discard_count, 0);
 
-	do_gettimeofday (&sbi->pmu.time_start);
 	/*return tv.tv_sec * 1000000 + tv.tv_usec;*/
 }
 
 
 void amf_pmu_display (struct f2fs_sb_info *sbi)
 {
-	struct timeval time_end, time_diff;
+	//struct timeval time_end, time_diff;
 
-	do_gettimeofday (&time_end);
-	timeval_subtract (&time_diff, &time_end, &sbi->pmu.time_start);
+	//do_gettimeofday (&time_end);
+	//timeval_subtract (&time_diff, &time_end, &sbi->pmu.time_start);
 
 	printk (KERN_INFO "f2fs: -------------------------\n");
 	printk (KERN_INFO "f2fs: -------------------------\n");
@@ -78,6 +86,11 @@ void amf_pmu_display (struct f2fs_sb_info *sbi)
 	printk (KERN_INFO "f2fs: meta writes: %ld (cp: %ld)\n", atomic64_read (&sbi->pmu.meta_w), atomic64_read (&sbi->pmu.ckp_w));
 	printk (KERN_INFO "f2fs: \n");
 
+	printk (KERN_INFO "f2fs: padding meta write : %ld\n", atomic64_read (&sbi->pmu.pad_meta_w));
+	printk (KERN_INFO "f2fs: padding norm writes: %ld\n", atomic64_read (&sbi->pmu.pad_norm_w));
+	printk (KERN_INFO "f2fs: padding writes: %ld\n", atomic64_read (&sbi->pmu.padded_writes));
+	printk (KERN_INFO "f2fs: \n");
+
 	printk (KERN_INFO "f2fs: gc fs copies: %ld\n", atomic64_read (&sbi->pmu.fs_gc_rw));
 	printk (KERN_INFO "f2fs: gc metalog copies: %ld\n", atomic64_read (&sbi->pmu.metalog_gc_rw));
 	printk (KERN_INFO "f2fs: \n");
@@ -85,7 +98,17 @@ void amf_pmu_display (struct f2fs_sb_info *sbi)
 	printk (KERN_INFO "f2fs: mapping writes: %ld\n", atomic64_read (&sbi->pmu.mapping_w));
 	printk (KERN_INFO "f2fs: \n");
 
-	printk (KERN_INFO "f2fs: Execution Time (secs): %lu.%lu\n", time_diff.tv_sec, time_diff.tv_usec);
+	
+
+	printk (KERN_INFO "f2fs: &sbi->pmu.erase_count : %ld\n", atomic64_read (&sbi->pmu.erase_count));
+	printk (KERN_INFO "f2fs: \n");
+
+	printk (KERN_INFO "f2fs: &sbi->pmu.discard_count : %ld\n", atomic64_read (&sbi->pmu.discard_count));
+	printk (KERN_INFO "f2fs: \n");
+	
+	printk (KERN_INFO "f2fs: \n");
+
+	//printk (KERN_INFO "f2fs: Execution Time (secs): %lu.%lu\n", time_diff.tv_sec, time_diff.tv_usec);
 
 	printk (KERN_INFO "f2fs: -------------------------\n");
 }

@@ -724,7 +724,7 @@ submit_io:
 		ri->mapping_gc_eblkofs = 
 			(ri->mapping_gc_eblkofs + secs_avaliable) % ri->nr_mapping_phys_blks;
 
-		atomic64_add (1, &sbi->pmu.mapping_w);
+		atomic64_add (bio_sectors (bio)/8, &sbi->pmu.mapping_w);
 	
 #ifdef CMO_DEBUG
 		//pr_notice("End amf_write_mapping_entries()\n");
