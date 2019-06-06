@@ -26,6 +26,7 @@
 
 #ifdef AMF_SNAPSHOT
 #include <liblightnvm.h>
+
 #endif
 
 
@@ -61,6 +62,29 @@ struct amf_map_blk {
 	__le32 mapping[F2FS_BLKSIZE/sizeof(__le32)-4];
 };
 
+struct nvm_addrf_12 {
+	u8	ch_len;
+	u8	lun_len;
+	u8	blk_len;
+	u8	pg_len;
+	u8	pln_len;
+	u8	sec_len;
+
+	u8	ch_offset;
+	u8	lun_offset;
+	u8	blk_offset;
+	u8	pg_offset;
+	u8	pln_offset;
+	u8	sec_offset;
+
+	u64	ch_mask;
+	u64	lun_mask;
+	u64	blk_mask;
+	u64	pg_mask;
+	u64	pln_mask;
+	u64	sec_mask;
+};
+
 
 static char nvm_dev_path[20] = "/dev/nvme0n1";
 static struct nvm_dev *nvmdev;
@@ -72,6 +96,80 @@ size_t nvm_buf_w_nbytes = 0;
 unsigned int nvm_count_write_pg = 0;
 struct nvm_addr *nvm_write_addrs;
 int pmode;	//NVM_PLANE_SINGLE
+struct nvm_addrf_12 nvm_dev_addrf;
+
+
+static  int fls(int x)
+{
+	int r = 32;
+
+	if (!x)
+		return 0;
+	if (!(x & 0xffff0000u)) {
+		x <<= 16;
+		r -= 16;
+	}
+	if (!(x & 0xff000000u)) {
+		x <<= 8;
+		r -= 8;
+	}
+	if (!(x & 0xf0000000u)) {
+		x <<= 4;
+		r -= 4;
+	}
+	if (!(x & 0xc0000000u)) {
+		x <<= 2;
+		r -= 2;
+	}
+	if (!(x & 0x80000000u)) {
+		x <<= 1;
+		r -= 1;
+	}
+	return r;
+}
+
+int get_count_order(unsigned int count)
+{
+	int order;
+	order = fls(count) - 1;
+		if (count & (count - 1))
+			order++;	
+	return order;
+}
+
+
+static void nvm_dev_set_addrf(struct nvm_dev *dev, struct nvm_addrf_12* dst){	
+	int power_len;
+	struct nvm_spec_ppaf_nand * dev_ppaf =nvm_dev_get_ppaf(dev);
+	/* Re-calculate channel and lun format to adapt to configuration */
+	power_len = get_count_order(nvmgeo->g.nchannels);
+	dst->ch_len = power_len;
+//printf("ch_len = %d\n",power_len);
+
+	power_len = get_count_order(nvmgeo->g.nluns);
+	dst->lun_len = power_len;
+
+	dst->blk_len = dev_ppaf->n.ch_off;
+	dst->pg_len =dev_ppaf->n.pg_len;
+	dst->pln_len = dev_ppaf->n.pl_len;
+	dst->sec_len = dev_ppaf->n.sec_len;
+
+	dst->sec_offset = 0;
+	dst->pln_offset = dst->sec_len;
+	dst->ch_offset = dst->pln_offset + dst->pln_len;
+	dst->lun_offset = dst->ch_offset + dst->ch_len;
+	dst->pg_offset = dst->lun_offset + dst->lun_len;
+	dst->blk_offset = dst->pg_offset + dst->pg_len;
+
+	dst->sec_mask = ((1ULL << dst->sec_len) - 1) << dst->sec_offset;
+	dst->pln_mask = ((1ULL << dst->pln_len) - 1) << dst->pln_offset;
+	dst->ch_mask = ((1ULL << dst->ch_len) - 1) << dst->ch_offset;
+	dst->lun_mask = ((1ULL << dst->lun_len) - 1) << dst->lun_offset;
+	dst->pg_mask = ((1ULL << dst->pg_len) - 1) << dst->pg_offset;
+	dst->blk_mask = ((1ULL << dst->blk_len) - 1) << dst->blk_offset;
+
+	
+}
 
 bool isCover(u64 cur){
 	if(nvm_head_pg/NVM_GEO_MIN_WRITE_PAGE == cur/NVM_GEO_MIN_WRITE_PAGE)
@@ -79,6 +177,20 @@ bool isCover(u64 cur){
 	return false;
 }
 
+struct nvm_addr tgt_nvm_addr_dev2gen(struct nvm_dev *dev, uint64_t addr){
+	struct nvm_addr gen = { .val = 0 };
+	
+
+	gen.g.ch = (addr & nvm_dev_addrf.ch_mask) >> nvm_dev_addrf.ch_offset;
+	gen.g.lun = (addr & nvm_dev_addrf.lun_mask) >> nvm_dev_addrf.lun_offset;
+	gen.g.pl= (addr & nvm_dev_addrf.pln_mask) >> nvm_dev_addrf.pln_offset;
+	gen.g.blk = (addr & nvm_dev_addrf.blk_mask) >> nvm_dev_addrf.blk_offset;
+	gen.g.pg = (addr & nvm_dev_addrf.pg_mask) >>nvm_dev_addrf.pg_offset;
+	gen.g.sec = (addr & nvm_dev_addrf.sec_mask) >>nvm_dev_addrf.sec_offset;
+	
+	return gen;
+
+}
 
 //由于所有都是写入1个addr，所以naddrs没有考虑
 int nvm_ocssd_cmd_write(struct nvm_dev *dev, u64 lblkaddr, int naddrs, const void *data, struct nvm_ret *ret)
@@ -95,7 +207,8 @@ int nvm_ocssd_cmd_write(struct nvm_dev *dev, u64 lblkaddr, int naddrs, const voi
 	if(!isCover(lblkaddr) || nvm_count_write_pg >= NVM_GEO_MIN_WRITE_PAGE || naddrs==0){//下刷，并重新分配buf
 		if(nvm_count_write_pg != 0){//buf_w中有数据，应该下刷		
 			for(i = 0; i < NVM_GEO_MIN_WRITE_PAGE; i++){
-			nvm_write_addrs[i] = nvm_addr_dev2gen(dev, nvm_head_pg + i);
+			nvm_write_addrs[i] = tgt_nvm_addr_dev2gen(dev, nvm_head_pg + i);
+			//nvm_write_addrs[i] = nvm_addr_dev2gen(dev, nvm_head_pg + i);
 			}
 			//dbg_log("nvm_write_addrs[0].ppa = 0x%llx\n",nvm_write_addrs[0].ppa);
 			int res = nvm_cmd_write(dev, nvm_write_addrs, NVM_GEO_MIN_WRITE_PAGE, nvm_buf_w, NULL, pmode, ret);
@@ -2243,6 +2356,7 @@ int f2fs_format_device(void)
 			nvm_buf_w_nbytes = NVM_GEO_MIN_WRITE_PAGE * nvmgeo->sector_nbytes;
 			pmode = nvmgeo->nplanes;
 			nvm_write_addrs = (struct nvm_addr*)malloc(sizeof(struct nvm_addr) * NVM_GEO_MIN_WRITE_PAGE);
+			nvm_dev_set_addrf(nvmdev,&nvm_dev_addrf);
 			
 			dbg_log("NVM_GEO_MIN_WRITE_PAGE = %d, pmode = %d\n", NVM_GEO_MIN_WRITE_PAGE, pmode);
 			

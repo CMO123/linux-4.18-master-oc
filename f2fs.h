@@ -287,14 +287,14 @@ enum {
 
 struct discard_policy {
 	int type;			/* type of discard */
-	unsigned int min_interval;	/* used for candidates exist */
-	unsigned int mid_interval;	/* used for device busy */
-	unsigned int max_interval;	/* used for candidates not exist */
-	unsigned int max_requests;	/* # of discards issued per round */
-	unsigned int io_aware_gran;	/* minimum granularity discard not be aware of I/O */
-	bool io_aware;			/* issue discard in idle time */
-	bool sync;			/* submit discard with REQ_SYNC flag */
-	unsigned int granularity;	/* discard granularity */
+	unsigned int min_interval;	/* used for candidates exist = 50ms*/
+	unsigned int mid_interval;	/* used for device busy = 500ms */
+	unsigned int max_interval;	/* used for candidates not exist = 60000 = 60s,当利用率大于80%时=50ms */
+	unsigned int max_requests;	/* # of discards issued per round = 8 */
+	unsigned int io_aware_gran;	/* minimum granularity discard not be aware of I/O = 512*/
+	bool io_aware;			/* issue discard in idle time，仅当discard_type == DPOLICY_BG时为 true ，其他情况全为false*/
+	bool sync;			/* submit discard with REQ_SYNC flag = false*/
+	unsigned int granularity;	/* discard granularity = 16或者1 */
 };
 
 struct discard_cmd_control {
@@ -307,8 +307,8 @@ struct discard_cmd_control {
 	unsigned int discard_wake;		/* to wake up discard thread */
 	struct mutex cmd_lock;
 	unsigned int nr_discards;		/* # of discards in the list */
-	unsigned int max_discards;		/* max. discards to be issued */
-	unsigned int discard_granularity;	/* discard granularity */
+	unsigned int max_discards;		/* max. discards to be issued =  MAIN_SEGS(sbi) << sbi->log_blocks_per_seg = 28902*512 */
+	unsigned int discard_granularity;	/* discard granularity = 16 个block */
 	unsigned int undiscard_blks;		/* # of undiscard blocks */
 	atomic_t issued_discard;		/* # of issued discard */
 	atomic_t issing_discard;		/* # of issing discard */
@@ -555,7 +555,7 @@ struct extent_node {
 
 struct extent_tree {
 	nid_t ino;			/* inode number */
-	struct rb_root root;		/* root of extent info rb-tree */
+	struct rb_root root;		/* root of extent info rb-tree,其拥有的所有extent_node的根 */
 	struct extent_node *cached_en;	/* recently accessed extent node */
 	struct extent_info largest;	/* largested extent info */
 	struct list_head list;		/* to be used by sbi->zombie_list */
@@ -576,8 +576,8 @@ struct extent_tree {
 
 struct f2fs_map_blocks {
 	block_t m_pblk;
-	block_t m_lblk;
-	unsigned int m_len;
+	block_t m_lblk;	// 对齐F2FS_BLK的逻辑地址+1
+	unsigned int m_len;	// 
 	unsigned int m_flags;
 	pgoff_t *m_next_pgofs;		/* point next possible non-hole pgofs */
 	pgoff_t *m_next_extent;		/* point to next possible extent */
@@ -677,7 +677,7 @@ struct f2fs_inode_info {
 	struct timespec i_crtime;	/* inode creation time */
 	struct timespec i_disk_time[4];	/* inode disk times */
 };
-
+/*从磁盘中f2fs_extent初始化一个内存中extent_info*/
 static inline void get_extent_info(struct extent_info *ext,
 					struct f2fs_extent *i_ext)
 {
@@ -761,12 +761,12 @@ enum nid_state {
 
 struct f2fs_nm_info {
 	block_t nat_blkaddr;		/* base disk address of NAT */
-	nid_t max_nid;			/* maximum possible node ids */
+	nid_t max_nid;			/* maximum possible node ids,最大的nid = NAT_ENTRY_PER_BLOCK * 总的nat block的个数*/
 	nid_t available_nids;		/* # of available node ids */
-	nid_t next_scan_nid;		/* the next nid to be scanned */
-	unsigned int ram_thresh;	/* control the memory footprint */
-	unsigned int ra_nid_pages;	/* # of nid pages to be readaheaded */
-	unsigned int dirty_nats_ratio;	/* control dirty nats ratio threshold */
+	nid_t next_scan_nid;		/* the next nid to be scanned = sbi->ckpt->next_free_nid,一次扫描会扫8个页的nat block，将free nid加入free_nid_root中 */
+	unsigned int ram_thresh;	/* control the memory footprint = 1，10MB per 1GB */
+	unsigned int ra_nid_pages;	/* # of nid pages to be readaheaded = DEF_RA_NID_PAGES = 0 */
+	unsigned int dirty_nats_ratio;	/* control dirty nats ratio threshold = 10 */
 
 	/* NAT cache management */
 	struct radix_tree_root nat_root;/* root of the nat entry cache */
@@ -778,22 +778,23 @@ struct f2fs_nm_info {
 	unsigned int nat_blocks;	/* # of nat blocks，nat1所占的block数目 */
 
 	/* free node ids management */
-	struct radix_tree_root free_nid_root;/* root of the free_nid cache */
-	struct list_head free_nid_list;		/* list for free nids excluding preallocated nids */
+	struct radix_tree_root free_nid_root;/* root of the free_nid cache,包括free_nid和preallocate nids */
+	struct list_head free_nid_list;		/* list for free nids excluding preallocated nids，只包括free_nid不包括preallocated nids */
 	unsigned int nid_cnt[MAX_NID_STATE];	/* the number of free node id */
 	spinlock_t nid_list_lock;	/* protect nid lists ops */
 	struct mutex build_lock;	/* lock for build free nids */
 	unsigned char **free_nid_bitmap;//free_nid_bitmap[i]：第i个nat_block中，各个nat_entry的有效性
-	unsigned char *nat_block_bitmap;//单个nat的block_bitmap
-	unsigned short *free_nid_count;	/* free nid count of NAT block */
+	unsigned char *nat_block_bitmap;//nat  block的bitmap,有nm_i->nat_blocks/8个
+	unsigned short *free_nid_count;	/* free nid count of NAT block，有个nm_i->nat_blocks个short值，
+	free_nid_count[i]:表示第i个nat block中free的nid数目 */
 
 	/* for checkpoint */
-	char *nat_bitmap;		/* NAT bitmap pointer */
+	char *nat_bitmap;		/* NAT bitmap pointer，从ckpt中拷贝 */
 
-	unsigned int nat_bits_blocks;	/* # of nat bits blocks */
-	unsigned char *nat_bits;	/* NAT bits blocks */
-	unsigned char *full_nat_bits;	/* full NAT pages */
-	unsigned char *empty_nat_bits;	/* empty NAT pages */
+	unsigned int nat_bits_blocks;	/* # of nat bits blocks, 存放nat_bits的blocks数目,是nat1和nat2总block的bitmap */
+	unsigned char *nat_bits;	/* NAT bits blocks，包括8字节的crc+所有的nat_bitmap（2份），指示nm_i->nat_blocks的有效性，不是nid的*/
+	unsigned char *full_nat_bits;	/* full NAT pages，除去前面8字节crc之外的，即真正的nat_bits，指示nat_blocks的有效性，这是当前版本要用的*/
+	unsigned char *empty_nat_bits;	/* empty NAT pages, nat2的nat_bit，有 nm_i->nat_blocks个bit，即 nm_i->nat_blocks / BITS_PER_BYTE字节，这是旧版本 */
 #ifdef CONFIG_F2FS_CHECK_FS
 	char *nat_bitmap_mir;		/* NAT bitmap mirror */
 #endif
@@ -804,20 +805,22 @@ struct f2fs_nm_info {
  * this structure is used as one of function parameters.
  * all the information are dedicated to a given direct node block determined
  * by the data offset in a file.
+ * 这个结构是用作函数参数
+ * 所有信息都专用于由文件中的数据偏移确定的给定直接节点块。
  */
 struct dnode_of_data {
-	struct inode *inode;		/* vfs inode pointer */
+	struct inode *inode;		/* vfs inode pointer，这个不变，还是最顶上的inode */
 	struct page *inode_page;	/* its inode page, NULL is possible */
-	struct page *node_page;		/* cached direct node page */
-	nid_t nid;			/* node id of the direct node block */
-	unsigned int ofs_in_node;	/* data offset in the node page */
+	struct page *node_page;		/* cached direct node page,当前最后一级的direct node的node page */
+	nid_t nid;			/* node id of the direct node block, 直接指向datablock的那个node的nid(direct node)，即最后一级node page的nid*/
+	unsigned int ofs_in_node;	/* data offset in the node page, 想要的datablock在本direct node中的offset */
 	bool inode_page_locked;		/* inode page is locked or not */
 	bool node_changed;		/* is node block changed */
 	char cur_level;			/* level of hole node page */
 	char max_level;			/* level of current page located */
-	block_t	data_blkaddr;		/* block address of the node block */
+	block_t	data_blkaddr;		/* block address of the node block，所需数据的data_blkaddr */
 };
-
+// 根据参数设置dn
 static inline void set_new_dnode(struct dnode_of_data *dn, struct inode *inode,
 		struct page *ipage, struct page *npage, nid_t nid)
 {
@@ -879,28 +882,28 @@ struct f2fs_sm_info {
 
 	struct rw_semaphore curseg_lock;	/* for preventing curseg change */
 
-	block_t seg0_blkaddr;		/* block address of 0'th segment */
-	block_t main_blkaddr;		/* start block address of main area */
-	block_t ssa_blkaddr;		/* start block address of SSA area */
+	block_t seg0_blkaddr;		/* block address of 0'th segment = 512 */
+	block_t main_blkaddr;		/* start block address of main area = 0x16800 = 92160*/
+	block_t ssa_blkaddr;		/* start block address of SSA area  = 0xf600 = 62976*/
 
-	unsigned int segment_count;	/* total # of segments */
-	unsigned int main_segments;	/* # of segments in main area */
-	unsigned int reserved_segments;	/* # of reserved segments */
-	unsigned int ovp_segments;	/* # of overprovision segments */
+	unsigned int segment_count;	/* total # of segments,= 29081 = 除了superblock第一个segment之外的segment数目 */
+	unsigned int main_segments;	/* # of segments in main area,= 28902 */
+	unsigned int reserved_segments;	/* # of reserved segments= 248 */
+	unsigned int ovp_segments;	/* # of overprovision segments = 485 */
 
 	/* a threshold to reclaim prefree segments */
-	unsigned int rec_prefree_segments;
+	unsigned int rec_prefree_segments; // = 1445 = main_segments * 5%
 
 	/* for batched trimming */
 	unsigned int trim_sections;		/* # of sections to trim */
 
 	struct list_head sit_entry_set;	/* sit entry set list */
 
-	unsigned int ipu_policy;	/* in-place-update policy */
-	unsigned int min_ipu_util;	/* in-place-update threshold */
-	unsigned int min_fsync_blocks;	/* threshold for fsync */
-	unsigned int min_hot_blocks;	/* threshold for hot block allocation */
-	unsigned int min_ssr_sections;	/* threshold to trigger SSR allocation */
+	unsigned int ipu_policy;	/* in-place-update policy，由于test_opt(LFS)为false，ipu_policy = 1 << F2FS_IPU_FSYNC */
+	unsigned int min_ipu_util;	/* in-place-update threshold = DEF_MIN_IPU_UTIL = 70 */
+	unsigned int min_fsync_blocks;	/* threshold for fsync = DEF_MIN_FSYNC_BLOCKS = 8 */
+	unsigned int min_hot_blocks;	/* threshold for hot block allocation = DEF_MIN_HOT_BLOCKS = 16 */
+	unsigned int min_ssr_sections;	/* threshold to trigger SSR allocation  = sm_i->reserved_segments = 248*/
 
 	/* for flush command control */
 	struct flush_cmd_control *fcc_info;
@@ -917,6 +920,8 @@ struct f2fs_sm_info {
  *
  * f2fs monitors the number of several block types such as on-writeback,
  * dirty dentry blocks, dirty node blocks, and dirty meta blocks.
+ *
+ * 如果是meta、node、目录、常规文件with atomic write、冷的page，则使用F2FS_WB_CP_DATA
  */
 #define WB_DATA_TYPE(p)	(__is_cp_guaranteed(p) ? F2FS_WB_CP_DATA : F2FS_WB_DATA)
 enum count_type {
@@ -1124,7 +1129,8 @@ struct amf_pmu {
 		atomic64_t meta_w_sync;//0
 		
 		atomic64_t pad_meta_w;//0
-		atomic64_t pad_norm_w;//0
+		atomic64_t pad_data_w;//0
+		atomic64_t pad_node_w;
 		atomic64_t padded_writes;//1
 		
 		atomic64_t fs_gc_rw;//1,gc次数
@@ -1137,7 +1143,9 @@ struct amf_pmu {
 
 };
 	
-	
+int timeval_subtract (struct timeval *result, struct timeval *x, struct timeval *y);
+long amf_pmu_delta(struct timeval *tv1,struct timeval *tv2);
+
 void amf_pmu_create (struct f2fs_sb_info *sbi);
 void amf_pmu_display(struct f2fs_sb_info* sbi);
 
@@ -1149,7 +1157,8 @@ struct f2fs_sb_info {
 	struct f2fs_super_block *raw_super;	/* raw super block pointer */
 	struct rw_semaphore sb_lock;		/* lock for raw super block */
 	int valid_super_block;			/* valid super block no */
-	unsigned long s_flag;				/* flags for sbi */
+	unsigned long s_flag;				/* flags for sbi*/
+	// 一开始清除SBI_NEED_FSCK
 
 #ifdef CONFIG_BLK_DEV_ZONED
 	unsigned int blocks_per_blkz;		/* F2FS blocks per zone */
@@ -1172,18 +1181,19 @@ struct f2fs_sb_info {
 	mempool_t *write_io_dummy;		/* Dummy pages */
 
 	/* for checkpoint */
-	struct f2fs_checkpoint *ckpt;		/* raw checkpoint pointer */
+	struct f2fs_checkpoint *ckpt; /* raw checkpoint pointer，=f2fs_kzalloc((1+cp_payload)*blksize))，不仅包括f2fs_checkpoint,后面还有cp_payload,
+	里面保存的sit_bitmap_ptr*/
 	int cur_cp_pack;			/* remain current cp pack */
 	spinlock_t cp_lock;			/* for flag in ckpt */
 	struct inode *meta_inode;		/* cache meta blocks */
-	struct mutex cp_mutex;			/* checkpoint procedure lock */
+	struct mutex cp_mutex;			/* checkpoint procedure lock,用于禁止cp */
 	struct rw_semaphore cp_rwsem;		/* blocking FS operations */
 	struct rw_semaphore node_write;		/* locking node writes */
 	struct rw_semaphore node_change;	/* locking node change */
 	wait_queue_head_t cp_wait;
 	unsigned long last_time[MAX_TIME];	/* to store time in jiffies */
-	long interval_time[MAX_TIME];		/* to store thresholds */
-
+	long interval_time[MAX_TIME];		/* to store thresholds,CP_TIME = 60s, REQ_TIME=5s*/
+	
 	struct inode_management im[MAX_INO_ENTRY];      /* manage inode cache */
 
 	/* for orphan inode, use 0'th array */
@@ -1196,7 +1206,7 @@ struct f2fs_sb_info {
 	/* for extent tree cache */
 	struct radix_tree_root extent_tree_root;/* cache extent cache entries */
 	struct mutex extent_tree_lock;	/* locking extent radix tree */
-	struct list_head extent_list;		/* lru list for shrinker */
+	struct list_head extent_list;		/* lru list for shrinker,链接所有的extent_node */
 	spinlock_t extent_lock;			/* locking extent lru list */
 	atomic_t total_ext_tree;		/* extent tree count */
 	struct list_head zombie_list;		/* extent zombie tree list */
@@ -1204,61 +1214,61 @@ struct f2fs_sb_info {
 	atomic_t total_ext_node;		/* extent info count */
 
 	/* basic filesystem units */
-	unsigned int log_sectors_per_block;	/* log2 sectors per block */
-	unsigned int log_blocksize;		/* log2 block size */
+	unsigned int log_sectors_per_block;	/* log2 sectors per block = 0*/
+	unsigned int log_blocksize;		/* log2 block size = 12， 4KB */
 	unsigned int blocksize;			/* block size */
-	unsigned int root_ino_num;		/* root inode number*/
-	unsigned int node_ino_num;		/* node inode number*/
-	unsigned int meta_ino_num;		/* meta inode number*/
-	unsigned int log_blocks_per_seg;	/* log2 blocks per segment */
+	unsigned int root_ino_num;		/* root inode number = 3*/
+	unsigned int node_ino_num;		/* node inode number = 1*/
+	unsigned int meta_ino_num;		/* meta inode number = 2*/
+	unsigned int log_blocks_per_seg;	/* log2 blocks per segment = 9，只包含512个block，即2MB */
 	unsigned int blocks_per_seg;		/* blocks per segment */
-	unsigned int segs_per_sec;		/* segments per section */
-	unsigned int secs_per_zone;		/* sections per zone */
-	unsigned int total_sections;		/* total section count */
-	unsigned int total_node_count;		/* total node block count */
-	unsigned int total_valid_node_count;	/* valid node block count */
+	unsigned int segs_per_sec;		/* segments per section  = 1 */
+	unsigned int secs_per_zone;		/* sections per zone =1*/
+	unsigned int total_sections;		/* total section count = 28902，main area的section数目*/
+	unsigned int total_node_count;		/* total node block count  = 13511680, 1个NAT备份中所有nat entry的项目个数*/
+	unsigned int total_valid_node_count;	/* valid node block count = 1*/
 	loff_t max_file_blocks;			/* max block index of file */
-	int dir_level;				/* directory level */
+	int dir_level;				/* directory level = 0 */
 	unsigned int trigger_ssr_threshold;	/* threshold to trigger ssr */
 	int readdir_ra;				/* readahead inode in readdir */
 
-	block_t user_block_count;		/* # of user blocks */
-	block_t total_valid_block_count;	/* # of valid blocks */
+	block_t user_block_count;		/* # of user blocks = 14549504 */
+	block_t total_valid_block_count;	/* # of valid blocks = 2*/
 	block_t discard_blks;			/* discard command candidats */
-	block_t last_valid_block_count;		/* for recovery */
-	block_t reserved_blocks;		/* configurable reserved blocks */
-	block_t current_reserved_blocks;	/* current reserved blocks */
+	block_t last_valid_block_count;		/* for recovery = 2 */
+	block_t reserved_blocks;		/* configurable reserved blocks = 0 */
+	block_t current_reserved_blocks;	/* current reserved blocks  = 0*/
 
 	unsigned int nquota_files;		/* # of quota sysfile */
 
 	u32 s_next_generation;			/* for NFS support */
 
-	/* # of pages, see count_type */
+	/* # of pages, see count_type，记录不同类型pages的数目，初始化为0 */
 	atomic_t nr_pages[NR_COUNT_TYPE];
 	/* # of allocated blocks */
 	struct percpu_counter alloc_valid_block_count;
 
 	/* writeback control */
-	atomic_t wb_sync_req[META];	/* count # of WB_SYNC threads */
+	atomic_t wb_sync_req[META];	/* count # of WB_SYNC threads，初始化为0 */
 
 	/* valid inode count */
-	struct percpu_counter total_valid_inode_count;
+	struct percpu_counter total_valid_inode_count; // = 1
 
 	struct f2fs_mount_info mount_opt;	/* mount options */
 
 	/* for cleaning operations */
 	struct mutex gc_mutex;			/* mutex for GC */
 	struct f2fs_gc_kthread	*gc_thread;	/* GC thread */
-	unsigned int cur_victim_sec;		/* current victim section num */
+	unsigned int cur_victim_sec;		/* current victim section num = NULL_SECNO= ~(0) */
 	unsigned int gc_mode;			/* current GC state */
 	/* for skip statistic */
 	unsigned long long skipped_atomic_files[2];	/* FG_GC and BG_GC */
 
 	/* threshold for gc trials on pinned files */
-	u64 gc_pin_file_threshold;
+	u64 gc_pin_file_threshold; // = DEF_GC_FAILED_PINNED_FILES = 2048
 
 	/* maximum # of trials to find a victim segment for SSR and GC */
-	unsigned int max_victim_search;
+	unsigned int max_victim_search;	// 4096, covers 8G
 
 	/*
 	 * for stat information.
@@ -1273,7 +1283,7 @@ struct f2fs_sb_info {
 	atomic64_t read_hit_rbtree;		/* # of hit rbtree extent node */
 	atomic64_t read_hit_largest;		/* # of hit largest extent node */
 	atomic64_t read_hit_cached;		/* # of hit cached extent node */
-	atomic_t inline_xattr;			/* # of inline_xattr inodes */
+	atomic_t inline_xattr;			/* # of inline_xattr inodes，总的inline_xattr inodes的个数 */
 	atomic_t inline_inode;			/* # of inline_data inodes */
 	atomic_t inline_dir;			/* # of inline_dentry inodes */
 	atomic_t aw_cnt;			/* # of atomic writes */
@@ -1298,7 +1308,7 @@ struct f2fs_sb_info {
 	struct list_head s_list;
 	int s_ndevs;				/* number of devices */
 	struct f2fs_dev_info *devs;		/* for device list */
-	unsigned int dirty_device;		/* for checkpoint data flush */
+	unsigned int dirty_device;		/* for checkpoint data flush  = 0*/
 	spinlock_t dev_lock;			/* protect dirty_device */
 	struct mutex umount_mutex;
 	unsigned int shrinker_run_no;
@@ -1853,13 +1863,13 @@ static inline block_t __cp_payload(struct f2fs_sb_info *sbi)
 {
 	return le32_to_cpu(F2FS_RAW_SUPER(sbi)->cp_payload);
 }
-
+/*根据flag和ckpt中flag从不同地方读取sit_bitmap和nat_bitmap信息*/
 static inline void *__bitmap_ptr(struct f2fs_sb_info *sbi, int flag)
 {
 	struct f2fs_checkpoint *ckpt = F2FS_CKPT(sbi);
 	int offset;
 
-	if (is_set_ckpt_flags(sbi, CP_LARGE_NAT_BITMAP_FLAG)) {
+	if (is_set_ckpt_flags(sbi, CP_LARGE_NAT_BITMAP_FLAG)) {// &出来好像是0
 		offset = (flag == SIT_BITMAP) ?
 			le32_to_cpu(ckpt->nat_ver_bitmap_bytesize) : 0;
 		return &ckpt->sit_nat_version_bitmap + offset;
@@ -2004,7 +2014,7 @@ static inline s64 valid_inode_count(struct f2fs_sb_info *sbi)
 {
 	return percpu_counter_sum_positive(&sbi->total_valid_inode_count);
 }
-
+/* 在mapping中查找或创建指定位置的page，加锁并增加refcount，for_write区分是否等待wb刷回 */
 static inline struct page *f2fs_grab_cache_page(struct address_space *mapping,
 						pgoff_t index, bool for_write)
 {
@@ -2020,7 +2030,8 @@ static inline struct page *f2fs_grab_cache_page(struct address_space *mapping,
 	}
 #endif
 	if (!for_write)
-		return grab_cache_page(mapping, index);
+		return grab_cache_page(mapping, index);// 从mapping中找到index的page，加锁并增加refcount，没有则创建并放入mapping
+	// 功能同grab_cache_page，只是为buffered write设计，等待page刷回
 	return grab_cache_page_write_begin(mapping, index, AOP_FLAG_NOFS);
 }
 
@@ -2088,7 +2099,7 @@ static inline void *f2fs_kmem_cache_alloc(struct kmem_cache *cachep,
 
 static inline struct bio *f2fs_bio_alloc(struct f2fs_sb_info *sbi,
 						int npages, bool no_fail)
-{
+{// 注意，这里npages是创建npages个bio_vec，而不是page
 	struct bio *bio;
 
 	if (no_fail) {
@@ -2135,6 +2146,8 @@ static inline __le32 *blkaddr_in_node(struct f2fs_node *node)
 }
 
 static inline int f2fs_has_extra_attr(struct inode *inode);
+
+//从inode和direct node中取出block_addr
 static inline block_t datablock_addr(struct inode *inode,
 			struct page *node_page, unsigned int offset)
 {
@@ -2428,6 +2441,7 @@ static inline void f2fs_i_pino_write(struct inode *inode, nid_t pino)
 	f2fs_mark_inode_dirty_sync(inode, true);
 }
 
+/*根据ri->i_inline初始化f2fs_inode_info中的flags*/
 static inline void get_inline_info(struct inode *inode, struct f2fs_inode *ri)
 {
 	struct f2fs_inode_info *fi = F2FS_I(inode);

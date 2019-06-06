@@ -41,8 +41,8 @@
 /* For flag in struct node_info */
 enum {
 	IS_CHECKPOINTED,	/* is it checkpointed before? */
-	HAS_FSYNCED_INODE,	/* is the inode fsynced before? */
-	HAS_LAST_FSYNC,		/* has the latest node fsync mark? */
+	HAS_FSYNCED_INODE,	/* is the inode fsynced before? fsyncdone会设置这个值*/
+	HAS_LAST_FSYNC,		/* has the latest node fsync mark? fsyncdone会设置这个值，默认创建新的node也会设置 */
 	IS_DIRTY,		/* this nat entry is dirty? */
 	IS_PREALLOC,		/* nat entry is preallocated */
 };
@@ -55,7 +55,7 @@ struct node_info {
 	nid_t ino;		/* inode number of the node's owner */
 	block_t	blk_addr;	/* block address of the node */
 	unsigned char version;	/* version of the node */
-	unsigned char flag;	/* for node information bits */
+	unsigned char flag;	/* for node information bits，见上面enum*/
 };
 
 struct nat_entry {
@@ -188,6 +188,7 @@ static inline void get_nat_bitmap(struct f2fs_sb_info *sbi, void *addr)
 	memcpy(addr, nm_i->nat_bitmap, nm_i->bitmap_size);
 }
 
+/*得到start的nat所在的页*/
 static inline pgoff_t current_nat_addr(struct f2fs_sb_info *sbi, nid_t start)
 {
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
@@ -199,15 +200,25 @@ static inline pgoff_t current_nat_addr(struct f2fs_sb_info *sbi, nid_t start)
 	 * OLD = (segment_off * 512) * 2 + off_in_segment
 	 * NEW = 2 * (segment_off * 512 + off_in_segment) - off_in_segment
 	 */
-	block_off = NAT_BLOCK_OFFSET(start);
+	block_off = NAT_BLOCK_OFFSET(start);//只有一个nat时的逻辑地址
 
+	// block_addr是在有2个nat时，block_off应该所处的blk号
 	block_addr = (pgoff_t)(nm_i->nat_blkaddr +
-		(block_off << 1) -
-		(block_off & (sbi->blocks_per_seg - 1)));
+		(block_off << 1) -							
+		(block_off & (sbi->blocks_per_seg - 1)));	// 位运算，得到off_in_segment,相当于取block_per_seg的后几位
 
-	if (f2fs_test_bit(block_off, nm_i->nat_bitmap))//切换到另一个nat中(2个nat)
+	if (f2fs_test_bit(block_off, nm_i->nat_bitmap))	// nat_bitmap指示哪个nat是最新的，如果设置，则增加一个blocks_per_seg
 		block_addr += sbi->blocks_per_seg;
 
+	/* NAT表中2份的存放，是按segment划分备份，segment0和segment1互为备份
+
+	NAT表的存放：
+	
+ nat_blkaddr
+	|-------segment0--------|---------segment1----------|----------segment2-----|----------segment3---------|
+	|page0|page1|page2|page3|page0'|page1'|page2'|page3'|page4|page5|page6|page7|page4'|page5'|page6'|page7'|
+
+	*/
 	return block_addr;
 }
 
@@ -300,7 +311,7 @@ static inline void fill_node_footer_blkaddr(struct page *page, block_t blkaddr)
 	rn->footer.cp_ver = cpu_to_le64(cp_ver);
 	rn->footer.next_blkaddr = cpu_to_le32(blkaddr);
 }
-
+// 检查node->footer.cp_ver是不是和当前cp_version相同，是则可修复
 static inline bool is_recoverable_dnode(struct page *page)
 {
 	struct f2fs_checkpoint *ckpt = F2FS_CKPT(F2FS_P_SB(page));
@@ -354,7 +365,11 @@ static inline bool IS_DNODE(struct page *node_page)
 	}
 	return true;
 }
+/* 设置node page中对应位即off处的nid，page要么是inode，要么是indirect node
 
+ page是nide：nid设置的是off-NODE_DIR1_BLOCK，即inode中i_nid的值（2个direct、2个indirect、1个double_indirect）
+ page是indirect node：nid设置的indirect_node的nid
+*/
 static inline int set_nid(struct page *p, int off, nid_t nid, bool i)
 {
 	struct f2fs_node *rn = F2FS_NODE(p);
@@ -367,13 +382,14 @@ static inline int set_nid(struct page *p, int off, nid_t nid, bool i)
 		rn->in.nid[off] = cpu_to_le32(nid);
 	return set_page_dirty(p);
 }
-
+/*根据f2fs_node信息，分别从inode || indirect node中获取nid*/
 static inline nid_t get_nid(struct page *p, int off, bool i)
 {
 	struct f2fs_node *rn = F2FS_NODE(p);
 
 	if (i)
-		return le32_to_cpu(rn->i.i_nid[off - NODE_DIR1_BLOCK]);
+		return le32_to_cpu(rn->i.i_nid[off - NODE_DIR1_BLOCK]);//得到inode的off应该属于的那个nid
+	//得到indirect_node的第off个nid
 	return le32_to_cpu(rn->in.nid[off]);
 }
 
@@ -385,7 +401,7 @@ static inline nid_t get_nid(struct page *p, int off, bool i)
  */
 static inline int is_cold_data(struct page *page)
 {
-	return PageChecked(page);
+	return PageChecked(page);// PG_Checked这个标志，感觉这里被f2fs用来标志page cache冷数据了
 }
 
 static inline void set_cold_data(struct page *page)

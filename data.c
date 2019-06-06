@@ -49,6 +49,7 @@ static bool __is_cp_guaranteed(struct page *page)
 	inode = mapping->host;
 	sbi = F2FS_I_SB(inode);
 
+	// 如果是meta、node、目录、常规文件with atomic write、冷的page，返回true
 	if (inode->i_ino == F2FS_META_INO(sbi) ||
 			inode->i_ino ==  F2FS_NODE_INO(sbi) ||
 			S_ISDIR(inode->i_mode) ||
@@ -204,6 +205,7 @@ struct block_device *f2fs_target_device(struct f2fs_sb_info *sbi,
 	struct block_device *bdev = sbi->sb->s_bdev;
 	int i;
 
+	// 1. 将bdev设置为blk_addr对应的那个设备
 	for (i = 0; i < sbi->s_ndevs; i++) {
 		if (FDEV(i).start_blk <= blk_addr &&
 					FDEV(i).end_blk >= blk_addr) {
@@ -212,9 +214,10 @@ struct block_device *f2fs_target_device(struct f2fs_sb_info *sbi,
 			break;
 		}
 	}
+	// 2. 将bio->bi_disk,bio->bi_partno，bio->bi_iter.bi_sector设置为bdev相应的参数
 	if (bio) {
 		bio_set_dev(bio, bdev);
-		bio->bi_iter.bi_sector = SECTOR_FROM_BLOCK(blk_addr);
+		bio->bi_iter.bi_sector = SECTOR_FROM_BLOCK(blk_addr);//转换成512大小的sector方式
 	}
 	return bdev;
 }
@@ -238,6 +241,8 @@ static bool __same_bdev(struct f2fs_sb_info *sbi,
 
 /*
  * Low-level block read/write IO operations.
+ * 
+ * 分配npages个bi_vec的bio，并设置bio的设备属性、bio_end_io、bi_private、bi_write_hint属性等
  */
 static struct bio *__bio_alloc(struct f2fs_sb_info *sbi, block_t blk_addr,
 				struct writeback_control *wbc,
@@ -250,10 +255,12 @@ static struct bio *__bio_alloc(struct f2fs_sb_info *sbi, block_t blk_addr,
 	if(npages >= 64)
 		npages = 64;
 #endif
-
+	// 1. 分配npages个bi_vec的bio,但page还没创建
 	bio = f2fs_bio_alloc(sbi, npages, true);
 
+	// 2. 将bio->bi_disk,bio->bi_partno，bio->bi_iter.bi_sector设置为bdev相应的参数
 	f2fs_target_device(sbi, blk_addr, bio);
+	// 3. 设置bio->bi_end_io、bio->bi_private、bio->bi_write_hint等参数
 	if (is_read) {
 		bio->bi_end_io = f2fs_read_end_io;
 		bio->bi_private = NULL;
@@ -262,12 +269,14 @@ static struct bio *__bio_alloc(struct f2fs_sb_info *sbi, block_t blk_addr,
 		bio->bi_private = sbi;
 		bio->bi_write_hint = f2fs_io_type_to_rw_hint(sbi, type, temp);
 	}
+	// 4. 特定write back process的bio的初始化，用于cgroup
 	if (wbc)
 		wbc_init_bio(wbc, bio);
 
 	return bio;
 }
 
+/* 写时，根据类型，决定是否填充dummy page，然后submit_bio*/
 static inline void __submit_bio(struct f2fs_sb_info *sbi,
 				struct bio *bio, enum page_type type)
 {
@@ -298,13 +307,22 @@ static inline void __submit_bio(struct f2fs_sb_info *sbi,
 					GFP_NOIO | __GFP_ZERO | __GFP_NOFAIL);
 			f2fs_bug_on(sbi, !page);
 
-			SetPagePrivate(page);
+			SetPagePrivate(page);//设置PG_private标志，page->private有字段,PG_private,     If pagecache, has fs-private data，在page-flags.h中
 			set_page_private(page, (unsigned long)DUMMY_WRITTEN_PAGE);
 			lock_page(page);
-			if (bio_add_page(bio, page, PAGE_SIZE, 0) < PAGE_SIZE)
+			if (bio_add_page(bio, page, PAGE_SIZE, 0) < PAGE_SIZE)//这里可以add page是因为，fill dummy只在DATA时才会填充，而DATA路径上分配了bi_vec
 				f2fs_bug_on(sbi, 1);
 
 #ifdef AMF_PMU
+	if(type == DATA){
+		atomic64_add(1, &sbi->pmu.pad_data_w);
+	}
+	if(type == NODE){
+		atomic64_add(1, &sbi->pmu.pad_node_w);
+	}
+	if(type == META){
+		atomic64_add(1, &sbi->pmu.pad_meta_w);
+	}
 	atomic64_add(1, &sbi->pmu.padded_writes);		
 #endif
 		}
@@ -355,7 +373,7 @@ static void __submit_merged_bio(struct f2fs_bio_info *io)
 }
 
 static bool __has_merged_page(struct f2fs_bio_info *io,
-				struct inode *inode, nid_t ino, pgoff_t idx)
+				struct inode *inode, nid_t ino, pgoff_t idx)//write_io[],page相关的inode,0,page->index
 {
 	struct bio_vec *bvec;
 	struct page *target;
@@ -387,7 +405,7 @@ static bool __has_merged_page(struct f2fs_bio_info *io,
 }
 
 static bool has_merged_page(struct f2fs_sb_info *sbi, struct inode *inode,
-				nid_t ino, pgoff_t idx, enum page_type type)
+				nid_t ino, pgoff_t idx, enum page_type type)//sbi, page相关的inode,0,page->index,META
 {
 	enum page_type btype = PAGE_TYPE_OF_BIO(type);
 	enum temp_type temp;
@@ -407,7 +425,7 @@ static bool has_merged_page(struct f2fs_sb_info *sbi, struct inode *inode,
 	}
 	return ret;
 }
-
+/*将sbi->write_io[type][temp]中的bio提交到磁盘*/
 static void __f2fs_submit_merged_write(struct f2fs_sb_info *sbi,
 				enum page_type type, enum temp_type temp)
 {
@@ -430,13 +448,15 @@ static void __f2fs_submit_merged_write(struct f2fs_sb_info *sbi,
 
 static void __submit_merged_write_cond(struct f2fs_sb_info *sbi,
 				struct inode *inode, nid_t ino, pgoff_t idx,
-				enum page_type type, bool force)
+				enum page_type type, bool force)//sbi, page相关的inode,0,page->index,META,false
 {
 	enum temp_type temp;
 
+	// 1. 如果非强制，且要刷的页没有merge到write_io中，直接return
 	if (!force && !has_merged_page(sbi, inode, ino, idx, type))
 		return;
 
+	// 2. 将sbi->write_io[type]的merge数据全部提交
 	for (temp = HOT; temp < NR_TEMP_TYPE; temp++) {
 
 		__f2fs_submit_merged_write(sbi, type, temp);
@@ -449,12 +469,12 @@ static void __submit_merged_write_cond(struct f2fs_sb_info *sbi,
 
 void f2fs_submit_merged_write(struct f2fs_sb_info *sbi, enum page_type type)
 {
-	__submit_merged_write_cond(sbi, NULL, 0, 0, type, true);
+	__submit_merged_write_cond(sbi, NULL, 0, 0, type, true);// 0,0表示has_merged_page
 }
 
 void f2fs_submit_merged_write_cond(struct f2fs_sb_info *sbi,
 				struct inode *inode, nid_t ino, pgoff_t idx,
-				enum page_type type)
+				enum page_type type)// sbi, page相关的inode,0,page->index,META
 {
 	__submit_merged_write_cond(sbi, inode, ino, idx, type, false);
 }
@@ -469,6 +489,8 @@ void f2fs_flush_merged_writes(struct f2fs_sb_info *sbi)
 /*
  * Fill the locked page with data located in the block address.
  * A caller needs to unlock the page on failure.
+ *
+ * 分配bio，设置参数，提交fio请求
  */
 int f2fs_submit_page_bio(struct f2fs_io_info *fio)
 {
@@ -486,24 +508,28 @@ int f2fs_submit_page_bio(struct f2fs_io_info *fio)
 #endif
 
 
-
+	//1. 验证地址是否在合法范围
 	verify_block_addr(fio, fio->new_blkaddr);
 	trace_f2fs_submit_page_bio(page, fio);
 	f2fs_trace_ios(fio, 0);
 
 	/* Allocate a new bio */
+	// 2. 分配一个bi_vec的新的bio,并设置其bio设备属性、bio_end_io、bi_private、bi_write_hint属性
 	bio = __bio_alloc(fio->sbi, fio->new_blkaddr, fio->io_wbc,
 				1, is_read_io(fio->op), fio->type, fio->temp);
-
+	// 3. 将fio要提交的page添加到bio中
 	if (bio_add_page(bio, page, PAGE_SIZE, 0) < PAGE_SIZE) {
 		bio_put(bio);
 		return -EFAULT;
 	}
+	// 4. 将fio->op和op_flags放入bio->bi_opf
 	bio_set_op_attrs(bio, fio->op, fio->op_flags);
 
+	// 5. 提交bio
 	__submit_bio(fio->sbi, bio, fio->type);
 
 	if (!is_read_io(fio->op))
+		// WB_DATA_TYPE决定是那种F2FS_WB_CP_DATA       || F2FS_WB_DATA
 		inc_page_count(fio->sbi, WB_DATA_TYPE(fio->page));
 	return 0;
 }
@@ -947,6 +973,7 @@ alloc:
 	return 0;
 }
 
+//按照输入请求大小，提前分配好所需的node page
 int f2fs_preallocate_blocks(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
@@ -965,13 +992,20 @@ int f2fs_preallocate_blocks(struct kiocb *iocb, struct iov_iter *from)
 	if (is_inode_flag_set(inode, FI_NO_PREALLOC))
 		return 0;
 
-	map.m_lblk = F2FS_BLK_ALIGN(iocb->ki_pos);
+	map.m_lblk = F2FS_BLK_ALIGN(iocb->ki_pos);// 预分配，所以是所需逻辑地址的后一个，即ki_pos对应的逻辑块+1
 	map.m_len = F2FS_BYTES_TO_BLK(iocb->ki_pos + iov_iter_count(from));
+
+//pr_notice("iocb->ki_pos=%d, iov_iter_count(from) = %d\n",iocb->ki_pos, iov_iter_count(from));	ki_pos = 0, iov_iter_count = 28807
+//pr_notice("map.m_lblk = %d, map.m_len = %d\n",map.m_lblk, map.m_len); // m_lblk = 0, map.m_len = 7
+// append gc.c到gc.c后计算结果：target_size = 57614, ki_pos = 28807, iov_iter_count = 28807,
+// 								map.m_lblk = 8, map.m_len = 14
 	if (map.m_len > map.m_lblk)
 		map.m_len -= map.m_lblk;
 	else
 		map.m_len = 0;
 
+//pr_notice("map.m_len = %d\n",map.m_len); 得到的map.m_len = 7, append gc.c得到的map.m_len = 6
+	
 	map.m_next_pgofs = NULL;
 	map.m_next_extent = NULL;
 	map.m_seg_type = NO_CHECK_TYPE;
@@ -991,9 +1025,11 @@ int f2fs_preallocate_blocks(struct kiocb *iocb, struct iov_iter *from)
 	if (f2fs_has_inline_data(inode))
 		return err;
 
+//pr_notice(" MAX_INLINE_DATA(inode) = %d\n",  MAX_INLINE_DATA(inode));// 3488
 	flag = F2FS_GET_BLOCK_PRE_AIO;
 
 map_blocks:
+	// 提前将所需的node page分配好
 	err = f2fs_map_blocks(inode, &map, 1, flag);
 	if (map.m_len > 0 && err == -ENOSPC) {
 		if (!direct_io)
@@ -1026,6 +1062,15 @@ static inline void __do_map_lock(struct f2fs_sb_info *sbi, int flag, bool lock)
  *     a. preallocate requested block addresses
  *     b. do not use extent cache for better performance
  *     c. give the block addresses to blockdev
+ * 
+ * f2fs_map_blocks()现在支持readahead/bmap/rw direct_IO
+ * 如果原本的data blocks被分配了，then give them to blockdev
+ * 否则，
+ *		a. 预分配请求所需块地址
+ * 		b. 不使用extent cache以提高性能
+ * 		c. 将块地址给blockdev
+ * 
+ * 在f2fs_preallocate_blocks中是提前创建node page，但没有创建data blocks
  */
 int f2fs_map_blocks(struct inode *inode, struct f2fs_map_blocks *map,
 						int create, int flag)
@@ -1045,12 +1090,15 @@ int f2fs_map_blocks(struct inode *inode, struct f2fs_map_blocks *map,
 	if (!maxblocks)
 		return 0;
 
+//pr_notice("maxblocks = %d\n", maxblocks);// 7, append后maxblocks = 6
 	map->m_len = 0;
 	map->m_flags = 0;
 
 	/* it only supports block size == page size */
 	pgofs =	(pgoff_t)map->m_lblk;
-	end = pgofs + maxblocks;
+	end = pgofs + maxblocks;	// 包括end所在页，所有map的页为m_len + 1
+
+//pr_notice("pgofs = %d, end = %d\n",pgofs, end);// pgofs = 0, end = 7 ，append后 pgofs = 8, end = 14 
 
 	if (!create && f2fs_lookup_extent_cache(inode, pgofs, &ei)) {
 		map->m_pblk = ei.blk + pgofs - ei.fofs;
@@ -1066,7 +1114,9 @@ next_dnode:
 		__do_map_lock(sbi, flag, true);
 
 	/* When reading holes, we need its node page */
+	// 1. 初始化dn参数
 	set_new_dnode(&dn, inode, NULL, NULL, 0);
+	// 2. 根据dn参数和pgofs，填充所需数据的dn，包括数据的blk_addr，并创建路径上的node page等，填充nid
 	err = f2fs_get_dnode_of_data(&dn, pgofs, mode);
 	if (err) {
 		if (flag == F2FS_GET_BLOCK_BMAP)
@@ -1088,21 +1138,27 @@ next_dnode:
 	last_ofs_in_node = ofs_in_node = dn.ofs_in_node;
 	end_offset = ADDRS_PER_PAGE(dn.node_page, inode);
 
+//pr_notice("start_pgofs = %d, prealloc=%d, last_ofs_in_node = %d, end_offset = %d\n",start_pgofs, prealloc, last_ofs_in_node, end_offset);
+// start_pgofs = 0, prealloc = 0, last_ofs_in_node = 0, end_offset = 873
+// append结果：[18941.142220] start_pgofs = 8, prealloc=0, last_ofs_in_node = 8, end_offset = 873
+
 next_block:
+	// 3. 得到下一个块地址
 	blkaddr = datablock_addr(dn.inode, dn.node_page, dn.ofs_in_node);
+//pr_notice("blkaddr=%d\n",blkaddr);// 输出7个0
 
 	if (!is_valid_blkaddr(blkaddr)) {
-		if (create) {
+		if (create) {// enter
 			if (unlikely(f2fs_cp_error(sbi))) {
 				err = -EIO;
 				goto sync_out;
 			}
-			if (flag == F2FS_GET_BLOCK_PRE_AIO) {
+			if (flag == F2FS_GET_BLOCK_PRE_AIO) {//如果是预分配块，只会预分配node page
 				if (blkaddr == NULL_ADDR) {
 					prealloc++;
 					last_ofs_in_node = dn.ofs_in_node;
 				}
-			} else {
+			} else {// 表示不会预先分配data_block
 				err = __allocate_data_block(&dn,
 							map->m_seg_type);
 				if (!err)
@@ -1110,6 +1166,7 @@ next_block:
 			}
 			if (err)
 				goto sync_out;
+			// 4. 将map->m_flags 设置为F2FS_MAP_NEW
 			map->m_flags |= F2FS_MAP_NEW;
 			blkaddr = dn.data_blkaddr;
 		} else {
@@ -1222,6 +1279,7 @@ out:
 	return err;
 }
 
+// 覆盖写
 bool f2fs_overwrite_io(struct inode *inode, loff_t pos, size_t len)
 {
 	struct f2fs_map_blocks map;

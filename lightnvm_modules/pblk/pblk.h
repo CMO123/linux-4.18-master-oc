@@ -995,6 +995,9 @@ static inline struct ppa_addr addr_to_gen_ppa(struct pblk *pblk, u64 paddr,
 		ppa.g.ch = (paddr & ppaf->ch_mask) >> ppaf->ch_offset;
 		ppa.g.pl = (paddr & ppaf->pln_mask) >> ppaf->pln_offset;
 		ppa.g.sec = (paddr & ppaf->sec_mask) >> ppaf->sec_offset;
+//pr_notice("paddr=%lld, ppa=%lld\n",paddr,ppa.ppa);
+//pr_notice("ppa.g.blk=%d,ppa.g.pg=%d,ppa.g.lun=%d,ppa.g.ch=%d,ppa.g.pl=%d,ppa.g.sec=%d\n",ppa.g.blk,ppa.g.pg,ppa.g.lun,ppa.g.ch,ppa.g.pl,ppa.g.sec);
+
 	} else {
 		struct pblk_addrf *uaddrf = &pblk->uaddrf;
 		int secs, chnls, luns;

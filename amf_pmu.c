@@ -28,6 +28,17 @@ int timeval_subtract (
 	return x->tv_sec < y->tv_sec;
 }
 
+long amf_pmu_delta(struct timeval *tv1,struct timeval *tv2)
+	{//秒数和微秒数
+		unsigned long deltv;
+	
+		deltv = tv2->tv_sec - tv1->tv_sec;
+		
+		deltv = deltv*1000000 + tv2->tv_usec - tv1->tv_usec;
+		
+		return deltv;
+	}
+
 
 void amf_pmu_create (struct f2fs_sb_info *sbi)
 {
@@ -42,7 +53,8 @@ void amf_pmu_create (struct f2fs_sb_info *sbi)
 	atomic64_set (&sbi->pmu.meta_w_sync, 0);
 
 	atomic64_set (&sbi->pmu.pad_meta_w, 0);
-	atomic64_set (&sbi->pmu.pad_norm_w, 0);
+	atomic64_set (&sbi->pmu.pad_node_w, 0);
+	atomic64_set (&sbi->pmu.pad_data_w, 0);
 	atomic64_set (&sbi->pmu.padded_writes, 0);
 	
 	atomic64_set (&sbi->pmu.fs_gc_rw, 0);
@@ -87,7 +99,8 @@ void amf_pmu_display (struct f2fs_sb_info *sbi)
 	printk (KERN_INFO "f2fs: \n");
 
 	printk (KERN_INFO "f2fs: padding meta write : %ld\n", atomic64_read (&sbi->pmu.pad_meta_w));
-	printk (KERN_INFO "f2fs: padding norm writes: %ld\n", atomic64_read (&sbi->pmu.pad_norm_w));
+	printk (KERN_INFO "f2fs: padding node writes: %ld\n", atomic64_read (&sbi->pmu.pad_node_w));
+	printk (KERN_INFO "f2fs: padding data writes: %ld\n", atomic64_read (&sbi->pmu.pad_data_w));
 	printk (KERN_INFO "f2fs: padding writes: %ld\n", atomic64_read (&sbi->pmu.padded_writes));
 	printk (KERN_INFO "f2fs: \n");
 

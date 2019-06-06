@@ -194,6 +194,7 @@ bool f2fs_check_rb_tree_consistence(struct f2fs_sb_info *sbi,
 static struct kmem_cache *extent_tree_slab;
 static struct kmem_cache *extent_node_slab;
 
+/*创建一个extent_node，加入extent_tree中 */
 static struct extent_node *__attach_extent_node(struct f2fs_sb_info *sbi,
 				struct extent_tree *et, struct extent_info *ei,
 				struct rb_node *parent, struct rb_node **p)
@@ -243,7 +244,7 @@ static void __release_extent_node(struct f2fs_sb_info *sbi,
 
 	__detach_extent_node(sbi, et, en);
 }
-
+/*从sbi->extent_tree_root中得到为inode号的extent_tree，如果没有，则分配并返回*/
 static struct extent_tree *__grab_extent_tree(struct inode *inode)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
@@ -274,13 +275,14 @@ static struct extent_tree *__grab_extent_tree(struct inode *inode)
 
 	return et;
 }
-
+/* 用ei信息创建一个extent_node,作为extent_tree的根节点进行初始化*/
 static struct extent_node *__init_extent_tree(struct f2fs_sb_info *sbi,
 				struct extent_tree *et, struct extent_info *ei)
 {
 	struct rb_node **p = &et->root.rb_node;
 	struct extent_node *en;
 
+	// 1.创建一个extent_node，加入extent_tree中
 	en = __attach_extent_node(sbi, et, ei, NULL, p);
 	if (!en)
 		return NULL;
@@ -319,7 +321,9 @@ static void __drop_largest_extent(struct inode *inode,
 	}
 }
 
-/* return true, if inode page is changed */
+/* return true, if inode page is changed
+	根据i_ext初始化inode的extent_tree
+*/
 static bool __f2fs_init_extent_tree(struct inode *inode, struct f2fs_extent *i_ext)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
@@ -327,8 +331,10 @@ static bool __f2fs_init_extent_tree(struct inode *inode, struct f2fs_extent *i_e
 	struct extent_node *en;
 	struct extent_info ei;
 
+	// 1. 检查sbi是否支持extent_cache
 	if (!f2fs_may_extent_tree(inode)) {
 		/* drop largest extent */
+		// 如果不支持，则drap最大的extent，因为f2fs_inode->i_ext保存的是最大的extent
 		if (i_ext && i_ext->len) {
 			i_ext->len = 0;
 			return true;
@@ -336,17 +342,21 @@ static bool __f2fs_init_extent_tree(struct inode *inode, struct f2fs_extent *i_e
 		return false;
 	}
 
+	// 2.从sbi->extent_tree_root中得到为inode号的extent_tree，如果没有，则分配并返回extent_tree
 	et = __grab_extent_tree(inode);
 
 	if (!i_ext || !i_ext->len)
 		return false;
 
+	// 3.从磁盘中f2fs_extent初始化一个内存中extent_info
 	get_extent_info(&ei, i_ext);
 
 	write_lock(&et->lock);
+	// 4. 如果extent_tree中节点数大于0，则out
 	if (atomic_read(&et->node_cnt))
 		goto out;
 
+	// 5. 用ei信息创建一个extent_node,作为extent_tree的根节点进行初始化
 	en = __init_extent_tree(sbi, et, &ei);
 	if (en) {
 		spin_lock(&sbi->extent_lock);
@@ -358,8 +368,9 @@ out:
 	return false;
 }
 
+/*用i_ext初始化inode的extent_tree*/
 bool f2fs_init_extent_tree(struct inode *inode, struct f2fs_extent *i_ext)
-{
+{// i_ext是磁盘存储的最大的extent
 	bool ret =  __f2fs_init_extent_tree(inode, i_ext);
 
 	if (!F2FS_I(inode)->extent_tree)

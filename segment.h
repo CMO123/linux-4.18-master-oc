@@ -172,7 +172,7 @@ struct victim_sel_policy {
 	unsigned long *dirty_segmap;	/* dirty segment bitmap */
 	unsigned int max_search;	/* maximum # of segments to search */
 	unsigned int offset;		/* last scanned bitmap offset */
-	unsigned int ofs_unit;		/* bitmap search unit */
+	unsigned int ofs_unit;		/* bitmap search unit = 1*/
 	unsigned int min_cost;		/* minimum cost */
 	unsigned int min_segno;		/* segment # having min. cost */
 };
@@ -182,7 +182,7 @@ struct seg_entry {
 	unsigned int valid_blocks:10;	/* # of valid blocks */
 	unsigned int ckpt_valid_blocks:10;	/* # of valid blocks last cp */
 	unsigned int padding:6;		/* padding */
-	unsigned char *cur_valid_map;	/* validity bitmap of blocks */
+	unsigned char *cur_valid_map;	/* validity bitmap of blocks，每个segment里面blocks的validity bitmap */
 #ifdef CONFIG_F2FS_CHECK_FS
 	unsigned char *cur_valid_map_mir;	/* mirror of current valid bitmap */
 #endif
@@ -191,7 +191,7 @@ struct seg_entry {
 	 * checkpoint pack. This information is used by the SSR mode.
 	 */
 	unsigned char *ckpt_valid_map;	/* validity bitmap of blocks last cp */
-	unsigned char *discard_map;
+	unsigned char *discard_map;//1表示block为valid，0表示无效
 	unsigned long long mtime;	/* modification time of the segment */
 };
 
@@ -226,21 +226,21 @@ struct inmem_pages {
 struct sit_info {
 	const struct segment_allocation *s_ops;
 
-	block_t sit_base_addr;		/* start block address of SIT area */
-	block_t sit_blocks;		/* # of blocks used by SIT area */
+	block_t sit_base_addr;		/* start block address of SIT area = 1536 */
+	block_t sit_blocks;		/* # of blocks used by SIT area， sit area的所有blocks数目 */
 	block_t written_valid_blocks;	/* # of valid blocks in main area */
 	char *sit_bitmap;		/* SIT bitmap pointer */
 #ifdef CONFIG_F2FS_CHECK_FS
 	char *sit_bitmap_mir;		/* SIT bitmap mirror */
 #endif
-	unsigned int bitmap_size;	/* SIT bitmap size */
+	unsigned int bitmap_size;	/* SIT bitmap size，从ckpt中读取 */
 
 	unsigned long *tmp_map;			/* bitmap for temporal use */
-	unsigned long *dirty_sentries_bitmap;	/* bitmap for dirty sentries */
+	unsigned long *dirty_sentries_bitmap;	/* bitmap for dirty sentries，所有main_seg一个bit，即所有main_seg的dirty信息 */
 	unsigned int dirty_sentries;		/* # of dirty sentries */
 	unsigned int sents_per_block;		/* # of SIT entries per block */
 	struct rw_semaphore sentry_lock;	/* to protect SIT cache */
-	struct seg_entry *sentries;		/* SIT segment-level cache */
+	struct seg_entry *sentries;		/* SIT segment-level cache, 包含main_seg * seg_entry，即所有segment的信息*/
 	struct sec_entry *sec_entries;		/* SIT section-level cache */
 
 	/* for cost-benefit algorithm in cleaning procedure */
@@ -249,15 +249,15 @@ struct sit_info {
 	unsigned long long min_mtime;		/* min. modification time */
 	unsigned long long max_mtime;		/* max. modification time */
 
-	unsigned int last_victim[MAX_GC_POLICY]; /* last victim segment # */
+	unsigned int last_victim[MAX_GC_POLICY]; /* last victim segment #,为什么是每次找的victim+1呢？ */
 };
 
 struct free_segmap_info {
-	unsigned int start_segno;	/* start segment number logically */
+	unsigned int start_segno;	/* start segment number logically,从seg0(cp_addr)开始的segno号，即main_addr到seg0的segno=91648/512=179 */
 	unsigned int free_segments;	/* # of free segments */
 	unsigned int free_sections;	/* # of free sections */
 	spinlock_t segmap_lock;		/* free segmap lock */
-	unsigned long *free_segmap;	/* free segment bitmap */
+	unsigned long *free_segmap;	/* free segment bitmap，0表示free */
 	unsigned long *free_secmap;	/* free section bitmap */
 };
 
@@ -279,7 +279,7 @@ struct dirty_seglist_info {
 	unsigned long *dirty_segmap[NR_DIRTY_TYPE];
 	struct mutex seglist_lock;		/* lock for segment bitmaps */
 	int nr_dirty[NR_DIRTY_TYPE];		/* # of dirty segments */
-	unsigned long *victim_secmap;		/* background GC victims */
+	unsigned long *victim_secmap;		/* background GC victims，为0表示可以作为victim */
 };
 
 /* victim selection function for cleaning and SSR */
@@ -341,7 +341,7 @@ static inline unsigned int get_valid_blocks(struct f2fs_sb_info *sbi,
 	else
 		return get_seg_entry(sbi, segno)->valid_blocks;
 }
-
+// 由磁盘f2fs_sit_entry得到内存seg_entry
 static inline void seg_info_from_raw_sit(struct seg_entry *se,
 					struct f2fs_sit_entry *rs)
 {
@@ -403,7 +403,7 @@ static inline unsigned int find_next_inuse(struct free_segmap_info *free_i,
 	spin_unlock(&free_i->segmap_lock);
 	return ret;
 }
-
+// 将对应的segno的free_i->free_segmap和free_sections置为free（置0）
 static inline void __set_free(struct f2fs_sb_info *sbi, unsigned int segno)
 {
 	struct free_segmap_info *free_i = FREE_I(sbi);
@@ -457,7 +457,7 @@ static inline void __set_test_and_free(struct f2fs_sb_info *sbi,
 	}
 	spin_unlock(&free_i->segmap_lock);
 }
-
+/*将segno处的free_i->free_segmap和free_secmap置为1，即要用*/
 static inline void __set_test_and_inuse(struct f2fs_sb_info *sbi,
 		unsigned int segno)
 {
@@ -608,12 +608,12 @@ static inline int utilization(struct f2fs_sb_info *sbi)
 #define SMALL_VOLUME_SEGMENTS	(16 * 512)	/* 16GB */
 
 enum {
-	F2FS_IPU_FORCE,
-	F2FS_IPU_SSR,
-	F2FS_IPU_UTIL,
-	F2FS_IPU_SSR_UTIL,
-	F2FS_IPU_FSYNC,
-	F2FS_IPU_ASYNC,
+	F2FS_IPU_FORCE,	// IPU all the time
+	F2FS_IPU_SSR,	// 当ssr模式被开启时
+	F2FS_IPU_UTIL,	// 当FS利用率高于阈值
+	F2FS_IPU_SSR_UTIL,	// SSR开启且FS利用率高于阈值
+	F2FS_IPU_FSYNC,		// 当在fsync路径上，且# of dirty pages > min_fsync_blocks时
+	F2FS_IPU_ASYNC,		
 };
 
 static inline unsigned int curseg_segno(struct f2fs_sb_info *sbi,
@@ -645,10 +645,12 @@ static inline void verify_block_addr(struct f2fs_io_info *fio, block_t blk_addr)
 {
 	struct f2fs_sb_info *sbi = fio->sbi;
 
+	// 1. 如果数据类型为META && (op为写 || fio->is_meta), 检验blk_addr是否在[seg0_blkaddr, main_blkaddr]之间
 	if (PAGE_TYPE_OF_BIO(fio->type) == META &&
 				(!is_read_io(fio->op) || fio->is_meta))
 		BUG_ON(blk_addr < SEG0_BLKADDR(sbi) ||
 				blk_addr >= MAIN_BLKADDR(sbi));
+	//2. 如果非META，数据应该在[main_blkaddr, max_blkaddr]之间
 	else
 		BUG_ON(blk_addr < MAIN_BLKADDR(sbi) ||
 				blk_addr >= MAX_BLKADDR(sbi));
@@ -773,7 +775,7 @@ static inline void set_summary(struct f2fs_summary *sum, nid_t nid,
 }
 
 static inline block_t start_sum_block(struct f2fs_sb_info *sbi)
-{
+{// ckpt pack中sum_block的起始地址
 	return __start_cp_addr(sbi) +
 		le32_to_cpu(F2FS_CKPT(sbi)->cp_pack_start_sum);
 }

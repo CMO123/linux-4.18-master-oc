@@ -199,9 +199,9 @@ static bool sanity_check_inode(struct inode *inode)
 	}
 	return true;
 }
-
+/*得到inode的node page，根据其f2fs_inode初始化inode和f2fs_inode_info */
 static int do_read_inode(struct inode *inode)
-{
+{//读取f2fs的inode信息，填充inode
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
 	struct f2fs_inode_info *fi = F2FS_I(inode);
 	struct page *node_page;
@@ -209,15 +209,18 @@ static int do_read_inode(struct inode *inode)
 	projid_t i_projid;
 
 	/* Check if ino is within scope */
+	// 1. 检查inode号是否在[root_ino, sbi->nm_info->max_nid]之间
 	if (f2fs_check_nid_range(sbi, inode->i_ino))
 		return -EINVAL;
 
+	// 2. 得到inode的node page
 	node_page = f2fs_get_node_page(sbi, inode->i_ino);
 	if (IS_ERR(node_page))
 		return PTR_ERR(node_page);
 
 	ri = F2FS_INODE(node_page);
 
+	// 3. 根据读取的f2fs_inode初始化inode
 	inode->i_mode = le16_to_cpu(ri->i_mode);
 	i_uid_write(inode, le32_to_cpu(ri->i_uid));
 	i_gid_write(inode, le32_to_cpu(ri->i_gid));
@@ -232,6 +235,8 @@ static int do_read_inode(struct inode *inode)
 	inode->i_ctime.tv_nsec = le32_to_cpu(ri->i_ctime_nsec);
 	inode->i_mtime.tv_nsec = le32_to_cpu(ri->i_mtime_nsec);
 	inode->i_generation = le32_to_cpu(ri->i_generation);
+
+	// 4. 初始化f2fs_inode_info
 	if (S_ISDIR(inode->i_mode))
 		fi->i_current_depth = le32_to_cpu(ri->i_current_depth);
 	else if (S_ISREG(inode->i_mode))
@@ -244,9 +249,11 @@ static int do_read_inode(struct inode *inode)
 	fi->i_pino = le32_to_cpu(ri->i_pino);
 	fi->i_dir_level = ri->i_dir_level;
 
+	// 5. 用ri->i_ext初始化extent_tree
 	if (f2fs_init_extent_tree(inode, &ri->i_ext))
 		set_page_dirty(node_page);
 
+	// 6. 根据ri->i_inline初始化f2fs_inode_info中的flags
 	get_inline_info(inode, ri);
 
 	fi->i_extra_isize = f2fs_has_extra_attr(inode) ?
@@ -310,23 +317,31 @@ static int do_read_inode(struct inode *inode)
 	return 0;
 }
 
+/* 获取ino号的inode，如果有直接返回，没有则按规则创建*/
 struct inode *f2fs_iget(struct super_block *sb, unsigned long ino)
-{
+{//返回已经存在的inode，或者通过alloc_inode重新分配一个，并看不同的node类型设置不同的op
 	struct f2fs_sb_info *sbi = F2FS_SB(sb);
 	struct inode *inode;
 	int ret = 0;
 
-	inode = iget_locked(sb, ino);
+	//1. 获取inode->i_ino == ino的inode，没有则创建
+	inode = iget_locked(sb, ino);//从已挂载文件系统中获得ino的inode，如果没有则利用f2fs的alloc_inode重新分配一个，新的话带有标志I_NEW
+								//第一次在fill_super中调用创建sbi->meta_inode时，inode->i_state & I_NEW = 0x8, 是新创建的inode
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
 
+	/*2. 该inode不是新inode，直接返回该inode */
 	if (!(inode->i_state & I_NEW)) {
 		trace_f2fs_iget(inode);
 		return inode;
 	}
+	// 3. 如果是新创建的inode
+	// 3.1 如果inode是NODE节点或者META节点，调到make_now */
 	if (ino == F2FS_NODE_INO(sbi) || ino == F2FS_META_INO(sbi))
 		goto make_now;
 
+	// 3.2 inode是DATA节点：依据inode的节点号，将inode的node page读到页缓存，此时磁盘上的f2fs_node节点就位于页缓存中。
+	// 利用node page初始化inode和f2fs_inode_info
 	ret = do_read_inode(inode);
 	if (ret)
 		goto bad_inode;
@@ -335,6 +350,7 @@ struct inode *f2fs_iget(struct super_block *sb, unsigned long ino)
 		goto bad_inode;
 	}
 make_now:
+	/* 依据ino对应的节点类型或者文件类型，赋予inode不同的操作方法 */
 	if (ino == F2FS_NODE_INO(sbi)) {
 		inode->i_mapping->a_ops = &f2fs_node_aops;
 		mapping_set_gfp_mask(inode->i_mapping, GFP_NOFS);

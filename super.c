@@ -2074,6 +2074,16 @@ static inline bool sanity_check_area_boundary(struct f2fs_sb_info *sbi,
 	u64 seg_end_blkaddr = segment0_blkaddr +
 				(segment_count << log_blocks_per_seg);
 
+//pr_notice("segment0_blkaddr = 0x%x ,cp_blkaddr = 0x%x ,sit_blkaddr = 0x%x ,nat_blkaddr = 0x%x ,ssa_blkaddr = 0x%x ,main_blkaddr = 0x%x ,\
+//	segment_count_ckpt = %d ,segment_count_sit = %d ,segment_count_nat = %d ,segment_count_ssa = %d ,segment_count_main = %d ,segment_count = %d \
+//	,log_blocks_per_seg = %d ,main_end_blkaddr = 0x%x ,seg_end_blkaddr = 0x%x\n",segment0_blkaddr,cp_blkaddr,sit_blkaddr,nat_blkaddr,ssa_blkaddr,
+//	main_blkaddr,segment_count_ckpt,segment_count_sit,segment_count_nat,
+//	segment_count_ssa,segment_count_main,segment_count,log_blocks_per_seg,main_end_blkaddr,seg_end_blkaddr);
+
+//segment0_blkaddr = 0x200 ,cp_blkaddr = 0x200 ,sit_blkaddr = 0x600 ,nat_blkaddr = 0xe00 ,ssa_blkaddr = 0xf600 ,
+//main_blkaddr = 0x16800 ,	segment_count_ckpt = 2 ,segment_count_sit = 4 ,segment_count_nat = 116 ,segment_count_ssa = 57 ,
+//segment_count_main = 28902 ,segment_count = 29081 	,log_blocks_per_seg = 9 ,main_end_blkaddr = 0xe33400 ,seg_end_blkaddr = 0xe33400
+
 	if (segment0_blkaddr != cp_blkaddr) {
 		f2fs_msg(sb, KERN_INFO,
 			"Mismatch start address, segment0(%u) cp_blkaddr(%u)",
@@ -2203,6 +2213,12 @@ static int sanity_check_raw_super(struct f2fs_sb_info *sbi,
 			le32_to_cpu(raw_super->log_sectorsize));
 		return 1;
 	}
+
+//pr_notice("raw_super->log_sectorsize = 0x%x\n",raw_super->log_sectorsize);  == 0xc
+//pr_notice("raw_super->feature=0x%x\n",raw_super->feature);  == 0x0
+
+
+				
 	if (le32_to_cpu(raw_super->log_sectors_per_block) +
 		le32_to_cpu(raw_super->log_sectorsize) !=
 			F2FS_MAX_LOG_SECTOR_SIZE) {
@@ -2213,13 +2229,24 @@ static int sanity_check_raw_super(struct f2fs_sb_info *sbi,
 		return 1;
 	}
 
+//pr_notice("raw_super->log_sectors_per_block = %d\n",raw_super->log_sectors_per_block);
+//pr_notice("raw_super->log_sectorsize = %d\n",raw_super->log_sectorsize);
+// 0
+// 12
+
 	segment_count = le32_to_cpu(raw_super->segment_count);
 	segs_per_sec = le32_to_cpu(raw_super->segs_per_sec);
 	secs_per_zone = le32_to_cpu(raw_super->secs_per_zone);
 	total_sections = le32_to_cpu(raw_super->section_count);
 
+//pr_notice("segment_count = %d , segs_per_sec = %d, secs_per_zone = %d, total_sections = %d\n",
+//	segment_count, segs_per_sec, secs_per_zone, total_sections);
+// segment_count = 29081 , segs_per_sec = 1, secs_per_zone = 1, total_sections = 28902
+
 	/* blocks_per_seg should be 512, given the above check */
 	blocks_per_seg = 1 << le32_to_cpu(raw_super->log_blocks_per_seg);
+//pr_notice("blocks_per_seg = %d\n",blocks_per_seg);
+//	blocks_per_seg = 512
 
 	if (segment_count > F2FS_MAX_SEGMENT ||
 				segment_count < F2FS_MIN_SEGMENTS) {
@@ -2244,6 +2271,8 @@ static int sanity_check_raw_super(struct f2fs_sb_info *sbi,
 			segment_count, segs_per_sec, total_sections);
 		return 1;
 	}
+//pr_notice("raw_super->block_count = %d\n",raw_super->block_count);
+//raw_super->block_count = 14889984
 
 	if (segment_count > (le32_to_cpu(raw_super->block_count) >> 9)) {
 		f2fs_msg(sb, KERN_INFO,
@@ -2258,6 +2287,9 @@ static int sanity_check_raw_super(struct f2fs_sb_info *sbi,
 			secs_per_zone, total_sections);
 		return 1;
 	}
+
+//pr_notice("raw_super->extension_count = %d, raw_super->hot_ext_count = %d\n",raw_super->extension_count,raw_super->hot_ext_count);
+//raw_super->extension_count = 27, raw_super->hot_ext_count = 1
 	if (le32_to_cpu(raw_super->extension_count) > F2FS_MAX_EXTENSION ||
 			raw_super->hot_ext_count > F2FS_MAX_EXTENSION ||
 			(le32_to_cpu(raw_super->extension_count) +
@@ -2270,6 +2302,8 @@ static int sanity_check_raw_super(struct f2fs_sb_info *sbi,
 		return 1;
 	}
 
+//pr_notice("raw_super->cp_payload = %d",raw_super->cp_payload); 
+//raw_super->cp_payload = 0
 	if (le32_to_cpu(raw_super->cp_payload) >
 				(blocks_per_seg - F2FS_CP_PACKS)) {
 		f2fs_msg(sb, KERN_INFO,
@@ -2308,7 +2342,7 @@ int f2fs_sanity_check_ckpt(struct f2fs_sb_info *sbi)
 	unsigned int main_segs, blocks_per_seg;
 	int i;
 
-	total = le32_to_cpu(raw_super->segment_count);
+	total = le32_to_cpu(raw_super->segment_count);// 29081,除super block之外的所有segment
 	fsmeta = le32_to_cpu(raw_super->segment_count_ckpt);
 	fsmeta += le32_to_cpu(raw_super->segment_count_sit);
 	fsmeta += le32_to_cpu(raw_super->segment_count_nat);
@@ -2499,6 +2533,8 @@ static int init_blkz_info(struct f2fs_sb_info *sbi, int devi)
  * Because we have two copies of super block, so read both of them
  * to get the first valid one. If any one of them is broken, we pass
  * them recovery flag back to the caller.
+ * 从f2fs中通过sb_bread读取superblock #0或#1，拷贝到raw_super中。
+ * 一个有效的即可。如果2个都失败，则返回recovery flag给调用者
  */
 static int read_raw_super_block(struct f2fs_sb_info *sbi,
 			struct f2fs_super_block **raw_super,
@@ -2515,7 +2551,7 @@ static int read_raw_super_block(struct f2fs_sb_info *sbi,
 		return -ENOMEM;
 
 	for (block = 0; block < 2; block++) {
-		bh = sb_bread(sb, block);
+		bh = sb_bread(sb, block);//读取块0和1中的数据，块大小4KB
 		if (!bh) {
 			f2fs_msg(sb, KERN_ERR, "Unable to read %dth superblock",
 				block + 1);
@@ -2535,7 +2571,7 @@ static int read_raw_super_block(struct f2fs_sb_info *sbi,
 
 		if (!*raw_super) {
 			memcpy(super, bh->b_data + F2FS_SUPER_OFFSET,
-							sizeof(*super));
+							sizeof(*super));//将f2fs_super_block大小的sb从bh中拷贝出来，F2FS_SUPER_OFFSET = 1024是预留给分区的
 			*valid_super_block = block;
 			*raw_super = super;
 		}
@@ -2727,13 +2763,27 @@ try_onemore:
 		goto free_sbi;
 	}
 
+		/*pr_notice("sb_set_blocksize()---------:\n");
+		pr_notice("bdev_logical_block_size =q->limits.logical_block_size= 0x%x\n",bdev_logical_block_size(sb->s_bdev)); 
+		pr_notice("before set block size, bdev->bd_block_size = 0x%x\n",sb->s_bdev->bd_block_size);
+		pr_notice("before sb->s_blocksize = size = 0x%x\n",sb->s_blocksize);
+		*/
+		/*
+		f2fs:f2fs_fill_super:2502: bdev_logical_block_size =q->limits.logical_block_size= 0x1000
+		[  231.843576] f2fs:f2fs_fill_super:2503: before set block size, bdev->bd_block_size = 0x1000
+		[  231.843578] f2fs:f2fs_fill_super:2504: before sb->s_blocksize = size = 0x1000
+		[  231.843579] f2fs:f2fs_fill_super:2511: after sb->s_blocksize = size = 0x1000
+		*/
+
 	/*3. set a block size */
+	// 将bdev->bd_block_size = size设置为F2FS_BLKSIZE大小
 	if (unlikely(!sb_set_blocksize(sb, F2FS_BLKSIZE))) {
 		f2fs_msg(sb, KERN_ERR, "unable to set blocksize");
 		goto free_sbi;
 	}
+	//pr_notice("after sb->s_blocksize = size = 0x%x\n",sb->s_blocksize);//4096	
 
-	/*4.从设备中读取super_block*/
+	/*4.从设备中读取super_block信息*/
 	err = read_raw_super_block(sbi, &raw_super, &valid_super_block,
 								&recovery);
 	if (err)
@@ -2749,8 +2799,6 @@ try_onemore:
 	if (f2fs_sb_has_inode_chksum(sb))//没有进入条件循环
 		sbi->s_chksum_seed = f2fs_chksum(sbi, ~0, raw_super->uuid,
 						sizeof(raw_super->uuid));
-#ifdef CMO_QUE
-#endif
 
 	/* 5.
 	 * The BLKZONED feature indicates that the drive was formatted with
@@ -2780,6 +2828,8 @@ try_onemore:
 		goto free_options;
 
 
+pr_notice("test_opt(sbi, F2FS_MOUNT_LFS) = %d, test_opt(sbi, DISCARD)=%d,test_opt(sbi, DISABLE_ROLL_FORWARD)=%d\n ", test_opt(sbi, LFS), test_opt(sbi, DISCARD),
+		test_opt(sbi, DISABLE_ROLL_FORWARD));
 
 	sbi->max_file_blocks = max_file_blocks();
 	sb->s_maxbytes = sbi->max_file_blocks <<
@@ -2787,15 +2837,22 @@ try_onemore:
 	sb->s_max_links = F2FS_LINK_MAX;
 	get_random_bytes(&sbi->s_next_generation, sizeof(u32));
 
-#ifdef CONFIG_QUOTA
+#ifdef CONFIG_QUOTA//进入了这个if
+	/*
+	Disk quota磁盘配额技术是一种限制文件系统空间使用的技术。在Linux系统中，系统管理员可
+	以通过该技术限制其他用户在指定的容量范围内使用文件系统，从而防止个别用户过量使用而
+	影响到其他的用户，因此早先的磁盘配额技术都是基于user id和group id实现的。本文介绍的
+	project quota技术是社区近来新实现的一种磁盘配额技术，它不再基于用户和组来划分空间，
+	而基于project id实现，限额的粒度可以细到某个目录甚至单个文件，实现对文件系统空间布局进行控制。
+	*/
 	sb->dq_op = &f2fs_quota_operations;
-	if (f2fs_sb_has_quota_ino(sb))
+	if (f2fs_sb_has_quota_ino(sb))// 貌似没有进入if
 		sb->s_qcop = &dquot_quotactl_sysfile_ops;
 	else
 		sb->s_qcop = &f2fs_quotactl_ops;
 	sb->s_quota_types = QTYPE_MASK_USR | QTYPE_MASK_GRP | QTYPE_MASK_PRJ;
 
-	if (f2fs_sb_has_quota_ino(sbi->sb)) {
+	if (f2fs_sb_has_quota_ino(sbi->sb)) {//没有进入这个if
 		for (i = 0; i < MAXQUOTAS; i++) {
 			if (f2fs_qf_ino(sbi->sb, i))
 				sbi->nquota_files++;
@@ -2804,21 +2861,22 @@ try_onemore:
 #endif
 
 	/* 6.设置super_block参数*/
+	//初始化super_block的s_op项,sb->s_op= &jffs2_super_operations;
 	sb->s_op = &f2fs_sops;
-#ifdef CONFIG_F2FS_FS_ENCRYPTION
+#ifdef CONFIG_F2FS_FS_ENCRYPTION //没有进入if
 	sb->s_cop = &f2fs_cryptops;
 #endif
 	sb->s_xattr = f2fs_xattr_handlers;
 	sb->s_export_op = &f2fs_export_ops;
 	sb->s_magic = F2FS_SUPER_MAGIC;
-	sb->s_time_gran = 1;
+	sb->s_time_gran = 1;//c/m/atime的粒度
 	sb->s_flags = (sb->s_flags & ~SB_POSIXACL) |
-		(test_opt(sbi, POSIX_ACL) ? SB_POSIXACL : 0);
+		(test_opt(sbi, POSIX_ACL) ? SB_POSIXACL : 0);//test_opt = 0
 	memcpy(&sb->s_uuid, raw_super->uuid, sizeof(raw_super->uuid));
 	sb->s_iflags |= SB_I_CGROUPWB;//sb->s_iflags=0x1
 
 	/* init f2fs-specific super block info */
-	sbi->valid_super_block = valid_super_block;
+	sbi->valid_super_block = valid_super_block;//sbi->valid_super_block=0x0
 	mutex_init(&sbi->gc_mutex);
 	mutex_init(&sbi->cp_mutex);
 	init_rwsem(&sbi->node_write);
@@ -2862,6 +2920,7 @@ try_onemore:
 
 	init_rwsem(&sbi->cp_rwsem);
 	init_waitqueue_head(&sbi->cp_wait);
+	// 10. 根据raw_super初始化sbi信息
 	init_sb_info(sbi);
 
 //=============================================以上完成基本初始化============================
@@ -2935,11 +2994,11 @@ try_onemore:
 //=======================================================================
 
 	/* 10.初始化percpu变量，和F2FS_IO_SIZE() */
-	err = init_percpu_info(sbi);
+	err = init_percpu_info(sbi);//创建2个per-cpu变量，sbi->alloc_valid_block_count,sbi->total_valid_inode_count
 	if (err)
 		goto free_bio_info;
 
-	if (F2FS_IO_SIZE(sbi) > 1) {
+	if (F2FS_IO_SIZE(sbi) > 1) {//F2FS_IO_size = 0x1;
 		sbi->write_io_dummy =
 			mempool_create_page_pool(2 * (F2FS_IO_SIZE(sbi) - 1), 0);
 		if (!sbi->write_io_dummy) {
@@ -2949,7 +3008,8 @@ try_onemore:
 	}
 
 	/* 11. get an inode for meta space */
-	sbi->meta_inode = f2fs_iget(sb, F2FS_META_INO(sbi));
+	// f2fs_iget:获取ino号的inode，没有则创建
+	sbi->meta_inode = f2fs_iget(sb, F2FS_META_INO(sbi));//F2FS_META_INO = 0x2; sbi->meta_inode->i_ino = 0x2
 	if (IS_ERR(sbi->meta_inode)) {
 		f2fs_msg(sb, KERN_ERR, "Failed to read F2FS meta data inode");
 		err = PTR_ERR(sbi->meta_inode);
@@ -2960,12 +3020,66 @@ try_onemore:
 	//pr_notice("before f2fs_get_valid_checkpoint()\n");
 #endif 
 
+	/* 12. 根据sbi信息，得到checkpoint起始地址，读取checkpoint放入sbi->ckpt中。*/
 	err = f2fs_get_valid_checkpoint(sbi);
 	if (err) {
 		f2fs_msg(sb, KERN_ERR, "Failed to get valid F2FS checkpoint");
 		goto free_meta_inode;
 	}
 #ifdef CMO_OCSSD
+/* pr_notice("sbi->ckpt->checkpoint_ver = %lld,sbi->ckpt->user_block_count = %lld, sbi->ckpt->valid_block_count = %lld, sbi->ckpt->rsvd_segment_count = %d,\
+		sbi->ckpt->overprov_segment_count = %d, sbi->ckpt->free_segment_count = %d, sbi->ckpt->cur_node_segno[0] = %d,sbi->ckpt->cur_node_segno[1] = %d,\
+		sbi->ckpt->cur_node_segno[2] = %d,sbi->ckpt->cur_node_segno[3] = %d,sbi->ckpt->cur_node_segno[4] = %d,sbi->ckpt->cur_node_segno[5] = %d,\
+		sbi->ckpt->cur_node_segno[6] = %d,sbi->ckpt->cur_node_segno[7] = %d, sbi->ckpt->cur_node_blkoff[0] = %d, sbi->ckpt->cur_node_blkoff[1] = %d,\n\
+		sbi->ckpt->cur_node_blkoff[2] = %d, sbi->ckpt->cur_node_blkoff[3] = %d, sbi->ckpt->cur_node_blkoff[4] = %d, sbi->ckpt->cur_node_blkoff[5] = %d,\
+		sbi->ckpt->cur_node_blkoff[6] = %d, sbi->ckpt->cur_node_blkoff[7] = %d, sbi->ckpt->cur_data_segno[0] = %d, sbi->ckpt->cur_data_segno[1] = %d,\
+		sbi->ckpt->cur_data_segno[2] = %d, sbi->ckpt->cur_data_segno[3] = %d, sbi->ckpt->cur_data_segno[4] = %d, sbi->ckpt->cur_data_segno[5] = %d,\n\
+		sbi->ckpt->cur_data_segno[6] = %d, sbi->ckpt->cur_data_segno[7] = %d, sbi->ckpt->cur_data_blkoff[0] = %d, sbi->ckpt->cur_data_blkoff[1] = %d,\
+		sbi->ckpt->cur_data_blkoff[2] = %d, sbi->ckpt->cur_data_blkoff[3] = %d, sbi->ckpt->cur_data_blkoff[4] = %d, sbi->ckpt->cur_data_blkoff[5] = %d,\
+		sbi->ckpt->cur_data_blkoff[6] = %d, sbi->ckpt->cur_data_blkoff[7] = %d, sbi->ckpt->ckpt_flags = %d, sbi->ckpt->cp_pack_total_block_count = %d,\
+		sbi->ckpt->cp_pack_start_sum = %d, sbi->ckpt->valid_node_count = %d, sbi->ckpt->valid_inode_count = %d, sbi->ckpt->next_free_nid = %d,\n\
+		sbi->ckpt->sit_ver_bitmap_bytesize = %d, sbi->ckpt->nat_ver_bitmap_bytesize = %d, sbi->ckpt->checksum_offset = %d, sbi->ckpt->elapsed_time = %lld,\
+		sbi->ckpt->alloc_type[0]  = %d,sbi->ckpt->alloc_type[1] = %d,sbi->ckpt->alloc_type[2] = %d,sbi->ckpt->alloc_type[13] = %d,sbi->ckpt->alloc_type[14] = %d,\
+		sbi->ckpt->alloc_type[15] = %d,sbi->ckpt->sit_nat_version_bitmap[0] = %d\n",sbi->ckpt->checkpoint_ver,sbi->ckpt->user_block_count, sbi->ckpt->valid_block_count, sbi->ckpt->rsvd_segment_count, 
+		sbi->ckpt->overprov_segment_count, sbi->ckpt->free_segment_count, sbi->ckpt->cur_node_segno[0],sbi->ckpt->cur_node_segno[1],
+		sbi->ckpt->cur_node_segno[2],sbi->ckpt->cur_node_segno[3],sbi->ckpt->cur_node_segno[4],sbi->ckpt->cur_node_segno[5],
+		sbi->ckpt->cur_node_segno[6],sbi->ckpt->cur_node_segno[7], sbi->ckpt->cur_node_blkoff[0], sbi->ckpt->cur_node_blkoff[1],
+		sbi->ckpt->cur_node_blkoff[2], sbi->ckpt->cur_node_blkoff[3], sbi->ckpt->cur_node_blkoff[4], sbi->ckpt->cur_node_blkoff[5],
+		sbi->ckpt->cur_node_blkoff[6], sbi->ckpt->cur_node_blkoff[7], sbi->ckpt->cur_data_segno[0], sbi->ckpt->cur_data_segno[1],
+		sbi->ckpt->cur_data_segno[2], sbi->ckpt->cur_data_segno[3], sbi->ckpt->cur_data_segno[4], sbi->ckpt->cur_data_segno[5],
+		sbi->ckpt->cur_data_segno[6], sbi->ckpt->cur_data_segno[7], sbi->ckpt->cur_data_blkoff[0], sbi->ckpt->cur_data_blkoff[1],
+		sbi->ckpt->cur_data_blkoff[2], sbi->ckpt->cur_data_blkoff[3], sbi->ckpt->cur_data_blkoff[4], sbi->ckpt->cur_data_blkoff[5],
+		sbi->ckpt->cur_data_blkoff[6], sbi->ckpt->cur_data_blkoff[7], sbi->ckpt->ckpt_flags, sbi->ckpt->cp_pack_total_block_count,
+		sbi->ckpt->cp_pack_start_sum, sbi->ckpt->valid_node_count, sbi->ckpt->valid_inode_count, sbi->ckpt->next_free_nid,
+		sbi->ckpt->sit_ver_bitmap_bytesize, sbi->ckpt->nat_ver_bitmap_bytesize, sbi->ckpt->checksum_offset, sbi->ckpt->elapsed_time,
+		sbi->ckpt->alloc_type[0],sbi->ckpt->alloc_type[1],sbi->ckpt->alloc_type[2],sbi->ckpt->alloc_type[13],sbi->ckpt->alloc_type[14],
+		sbi->ckpt->alloc_type[15],sbi->ckpt->sit_nat_version_bitmap[0]);
+	
+*/
+	/*
+		[ 1828.330141] The size of a checkpoint = 193 (B)
+		[ 1828.330787] sbi->ckpt->checkpoint_ver = 982122859,sbi->ckpt->user_block_count = 14549504, sbi->ckpt->valid_block_count = 2, sbi->ckpt->rsvd_segment_count = 248, 	
+		sbi->ckpt->overprov_segment_count = 485, sbi->ckpt->free_segment_count = 28896, sbi->ckpt->cur_node_segno[0] = 0,sbi->ckpt->cur_node_segno[1] = 1,		
+		sbi->ckpt->cur_node_segno[2] = 2,sbi->ckpt->cur_node_segno[3] = -1,sbi->ckpt->cur_node_segno[4] = -1,sbi->ckpt->cur_node_segno[5] = -1, 	
+		sbi->ckpt->cur_node_segno[6] = -1,sbi->ckpt->cur_node_segno[7] = -1, sbi->ckpt->cur_node_blkoff[0] = 1, sbi->ckpt->cur_node_blkoff[1] = 0,
+		sbi->ckpt->cur_node_blkoff[2] = 0, sbi->ckpt->cur_node_blkoff[3] = 0, sbi->ckpt->cur_node_blkoff[4] = 0, sbi->ckpt->cur_node_blkoff[5] = 0, 
+		sbi->ckpt->cur_node_blkoff[6] = 0, sbi->ckpt->cur_node_blkoff[7] = 0, sbi->ckpt->cur_data_segno[0] = 3, sbi->ckpt->cur_data_segno[1] = 14450,
+		sbi->ckpt->cur_data_segno[2] = 7224, sbi->ckpt->cur_data_segno[3] = -1, sbi->ckpt->cur_data_segno[4] = -1, sbi->ckpt->cur_data_segno
+		[ 1828.349128] F2FS-fs (mydevice): Found nat_bits in checkpoint
+		[ 1828.537828] F2FS-fs (mydevice): Mounted with checkpoint version = 3a8a016b
+		[ 2129.377160] sbi->ckpt->cur_data_segno[2] = 7224, sbi->ckpt->cur_data_segno[3] = -1, sbi->ckpt->cur_data_segno[4] = -1, sbi->ckpt->cur_data_segno[5] = -1,
+				sbi->ckpt->cur_data_segno[6] = -1, sbi->ckpt->cur_data_segno[7] = -1, sbi->ckpt->cur_data_blkoff[0] = 1, sbi->ckpt->cur_data_blkoff[1] = 0,
+				sbi->ckpt->cur_data_blkoff[2] = 0, sbi->ckpt->cur_data_blkoff[3] = 0, sbi->ckpt->cur_data_blkoff[4] = 0, sbi->ckpt->cur_data_blkoff[5] = 0,
+				sbi->ckpt->cur_data_blkoff[6] = 0, sbi->ckpt->cur_data_blkoff[7] = 0, sbi->ckpt->ckpt_flags = 389, sbi->ckpt->cp_pack_total_block_count = 6,
+				sbi->ckpt->cp_pack_start_sum = 1, sbi->ckpt->valid_node_count = 1, sbi->ckpt->valid_inode_count = 1, sbi->ckpt->next_free_nid = 4,
+				sbi->ckpt->sit_ver_bitmap_bytesize = 128, sbi->ckpt->nat_ver_bitmap_bytesize = 3712, sbi->ckpt->checksum_offset = 4092, sbi->ckpt->elapsed_time = 0,
+				sbi->ckpt->alloc_type[0]  = 
+	
+	[ 2681.391427] sbi->ckpt->alloc_type[0]  = 0,sbi->ckpt->alloc_type[1] = 0,sbi->ckpt->alloc_type[2] = 0,sbi->ckpt->alloc_type[13] = 0,sbi->ckpt->alloc_type[14] = 0,
+	sbi->ckpt->alloc_type[15] = 0,sbi->ckpt->sit_nat_version_bitmap[0] = 0
+	*/
+
+
 		//pr_notice("after f2fs_get_valid_checkpoint()\n");
 	/*pr_notice("sbi->ckpt->cur_data_segno = %d,sbi->ckpt->cur_node_segno=%d, sbi->ckpt->checkpoint_ver=%d \
 	sbi->ckpt->valid_block_count=%d,sbi->ckpt->valid_inode_count=%d\n",
@@ -2977,12 +3091,14 @@ try_onemore:
 	
 
 	/* Initialize device list */
+	// 13. 初始化设备列表
 	err = f2fs_scan_devices(sbi);
 	if (err) {
 		f2fs_msg(sb, KERN_ERR, "Failed to find devices");
 		goto free_devices;
 	}
 
+	// 14. 利用ckpt信息初始化sbi
 	sbi->total_valid_node_count =
 				le32_to_cpu(sbi->ckpt->valid_node_count);
 	percpu_counter_set(&sbi->total_valid_inode_count,
@@ -3000,12 +3116,15 @@ try_onemore:
 		spin_lock_init(&sbi->inode_lock[i]);
 	}
 
+	// 15. 初始化extent相关结构，sbi->extent_tree_root
 	f2fs_init_extent_cache_info(sbi);
 
+	// 16. 初始化inode_management相关结构，sbi->im[]
 	f2fs_init_ino_entry_info(sbi);
 
 
 	/* setup f2fs internal modules */
+	// 17. 构建sbi->sm_info
 	err = f2fs_build_segment_manager(sbi);
 	if (err) {
 		f2fs_msg(sb, KERN_ERR,
@@ -3013,7 +3132,7 @@ try_onemore:
 		goto free_sm;
 	}
 
-
+	// 18. 构建sbi->nm_info，主要是free_nid_bitmap，管理空闲nid
 	err = f2fs_build_node_manager(sbi);
 	if (err) {
 		f2fs_msg(sb, KERN_ERR,
@@ -3032,9 +3151,11 @@ try_onemore:
 		sbi->kbytes_written =
 			le64_to_cpu(seg_i->journal->info.kbytes_written);
 
+	// 19.为sbi->sm_info->dirty_info->v_ops设置victim select算法
 	f2fs_build_gc_manager(sbi);
 
 	/* get an inode for node space */
+	// 20. 得到node_inode
 	sbi->node_inode = f2fs_iget(sb, F2FS_NODE_INO(sbi));
 	if (IS_ERR(sbi->node_inode)) {
 		f2fs_msg(sb, KERN_ERR, "Failed to read node inode");
@@ -3047,6 +3168,7 @@ try_onemore:
 		goto free_node_inode;
 
 	/* read root inode and dentry */
+	// 21. 得到root node
 	root = f2fs_iget(sb, F2FS_ROOT_INO(sbi));
 	if (IS_ERR(root)) {
 		f2fs_msg(sb, KERN_ERR, "Failed to read root inode");
@@ -3058,7 +3180,7 @@ try_onemore:
 		err = -EINVAL;
 		goto free_node_inode;
 	}
-
+	// 22. 分配root dentry
 	sb->s_root = d_make_root(root); /* allocate root dentry */
 	if (!sb->s_root) {
 		err = -ENOMEM;
@@ -3084,14 +3206,15 @@ try_onemore:
 	}
 #endif
 	/* if there are nt orphan nodes free them */
+	// 23. 恢复orphan inode
 	err = f2fs_recover_orphan_inodes(sbi);
 	if (err)
 		goto free_meta;
 
 	/* recover fsynced data */
+	// 24. 恢复fsynced data
 #ifndef CMO_OCSSD
-
-	if (!test_opt(sbi, DISABLE_ROLL_FORWARD)) {
+	if (!test_opt(sbi, DISABLE_ROLL_FORWARD)) {// 没有禁止root_forward, test_op(sbi, DISABLE_ROLL_FORWARD)==0
 		//*
 		// * mount should be failed, when device has readonly mode, and
 		// * previous checkpoint was not done by clean system shutdown.

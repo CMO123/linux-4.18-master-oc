@@ -1093,12 +1093,19 @@ retry:
 		for(i = 0; i < nr_secs; i++){
 		rqd->ppa_list[j++] = addr_ppa32_to_ppa64(sbi, lblkaddr+i);
 		//pr_notice("lblkaddr = %d ==> rqd->ppa_list[j] = %d \n", lblkaddr+i, rqd->ppa_list[j-1]);
+		/*pr_notice("rqd->ppa_list[j-1].g.ch= %lld,rqd->ppa_list[j-1].g.lun= %lld,rqd->ppa_list[j-1].g.blk= %lld,rqd->ppa_list[j-1].g.pg= %lld,\
+			rqd->ppa_list[j-1].g.pl= %lld,rqd->ppa_list[j-1].g.sec= %lld\n",rqd->ppa_list[j-1].g.ch,rqd->ppa_list[j-1].g.lun,rqd->ppa_list[j-1].g.blk,
+			rqd->ppa_list[j-1].g.pg,rqd->ppa_list[j-1].g.pl,rqd->ppa_list[j-1].g.sec);*/
 		}
 	}else{
 		rqd->ppa_addr = addr_ppa32_to_ppa64(sbi, lblkaddr);
 		//pr_notice("lblkaddr = %d ==> rqd->ppa_addr = %d \n", lblkaddr, rqd->ppa_addr);
 	}	
 	//pr_notice("before nvm_submit_io()\n");
+#ifdef CMO_SUM
+		do_gettimeofday(&rqd->start_rq);
+#endif
+
 
 	ret = nvm_submit_io(dev, rqd);
 	if(ret){
@@ -1173,7 +1180,9 @@ void amf_submit_bio_meta_w (struct f2fs_sb_info* sbi, struct bio* bio)
 
 		rqd.ppa_addr = addr_ppa32_to_ppa64(sbi, pblkaddr);
 	}
-
+#ifdef CMO_SUM
+	//do_gettimeofday(&rqd.start_rq);
+#endif
 		ret = nvm_submit_io_sync(dev, &rqd);
 	
 		if(ret){
@@ -1181,6 +1190,13 @@ void amf_submit_bio_meta_w (struct f2fs_sb_info* sbi, struct bio* bio)
 			bio_put(bio);
 			goto out;	
 		}
+
+#ifdef CMO_SUM
+	struct timeval end_t;
+	do_gettimeofday(&end_t);
+	long delta = amf_pmu_delta(&rqd.start_rq, &end_t);
+	pr_notice("erase interval = %ld\n", delta);
+#endif
 
 			
 out:

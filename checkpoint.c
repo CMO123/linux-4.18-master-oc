@@ -27,7 +27,7 @@ static struct kmem_cache *ino_entry_slab;
 struct kmem_cache *f2fs_inode_entry_slab;
 
 void f2fs_stop_checkpoint(struct f2fs_sb_info *sbi, bool end_io)
-{
+{	
 	set_ckpt_flags(sbi, CP_ERROR_FLAG);
 	if (!end_io)
 		f2fs_flush_merged_writes(sbi);
@@ -35,6 +35,7 @@ void f2fs_stop_checkpoint(struct f2fs_sb_info *sbi, bool end_io)
 
 /*
  * We guarantee no failure on the returned page.
+ * 获取一个稳定的最新的meta_page
  */
 struct page *f2fs_grab_meta_page(struct f2fs_sb_info *sbi, pgoff_t index)
 {
@@ -46,6 +47,7 @@ repeat:
 		cond_resched();
 		goto repeat;
 	}
+	//等待page写回，变得稳定
 	f2fs_wait_on_page_writeback(page, META, true);
 	if (!PageUptodate(page))
 		SetPageUptodate(page);
@@ -54,12 +56,14 @@ repeat:
 
 /*
  * We guarantee no failure on the returned page.
+ * 获取meta_mapping中第index号的meta page，如果没有，则创建并从设备中读取
  */
 static struct page *__get_meta_page(struct f2fs_sb_info *sbi, pgoff_t index,
 							bool is_meta)
 {
 	struct address_space *mapping = META_MAPPING(sbi);
 	struct page *page;
+	// 1. 构建fio
 	struct f2fs_io_info fio = {
 		.sbi = sbi,
 		.type = META,
@@ -71,17 +75,21 @@ static struct page *__get_meta_page(struct f2fs_sb_info *sbi, pgoff_t index,
 		.is_meta = is_meta,
 	};
 
+	// 2. 如果!is_meta,去除REQ_META标志，在（PRO only)f2fs_get_tmp_page ==>  __get_meta_page(sbi, index, false),用到
 	if (unlikely(!is_meta))
 		fio.op_flags &= ~REQ_META;
 repeat:
+	// 3. 从meta_mapping中获取第index的page
 	page = f2fs_grab_cache_page(mapping, index, false);
 	if (!page) {
 		cond_resched();
 		goto repeat;
 	}
+	// 4. 如果page已经是更新了的，则直接返回
 	if (PageUptodate(page))
 		goto out;
 
+	// 5. 如果不是最新的，则从设备中读取
 	fio.page = page;
 
 	if (f2fs_submit_page_bio(&fio)) {
@@ -90,7 +98,8 @@ repeat:
 	}
 
 	lock_page(page);
-	if (unlikely(page->mapping != mapping)) {
+	 // 6. 这里的错误处理，不太懂？？？？？
+	if (unlikely(page->mapping != mapping)) {// 可能是由于page cache shrink？？
 		f2fs_put_page(page, 1);
 		goto repeat;
 	}
@@ -100,8 +109,8 @@ repeat:
 	 * readonly and make sure do not write checkpoint with non-uptodate
 	 * meta page.
 	 */
-	if (unlikely(!PageUptodate(page))) {
-		memset(page_address(page), 0, PAGE_SIZE);
+	if (unlikely(!PageUptodate(page))) {// 如果page不是最新的，即访问设备是可能出错了
+		memset(page_address(page), 0, PAGE_SIZE);// 清空page，f2fs_stop_checkpoint?????
 		f2fs_stop_checkpoint(sbi, false);
 	}
 out:
@@ -439,7 +448,7 @@ static void __add_ino_entry(struct f2fs_sb_info *sbi, nid_t ino,
 	if (e != tmp)
 		kmem_cache_free(ino_entry_slab, tmp);
 }
-
+/*从对应的sbi->im[type]->ino_root中删除ino*/
 static void __remove_ino_entry(struct f2fs_sb_info *sbi, nid_t ino, int type)
 {
 	struct inode_management *im = &sbi->im[type];
@@ -647,7 +656,7 @@ int f2fs_recover_orphan_inodes(struct f2fs_sb_info *sbi)
 	orphan_blocks = __start_sum_addr(sbi) - 1 - __cp_payload(sbi);
 
 	f2fs_ra_meta_pages(sbi, start_blk, orphan_blocks, META_CP, true);
-
+	// 1. 读取所有的orphan ino号
 	for (i = 0; i < orphan_blocks; i++) {
 		struct page *page = f2fs_get_meta_page(sbi, start_blk + i);
 		struct f2fs_orphan_block *orphan_blk;
@@ -655,6 +664,7 @@ int f2fs_recover_orphan_inodes(struct f2fs_sb_info *sbi)
 		orphan_blk = (struct f2fs_orphan_block *)page_address(page);
 		for (j = 0; j < le32_to_cpu(orphan_blk->entry_count); j++) {
 			nid_t ino = le32_to_cpu(orphan_blk->ino[j]);
+			// 2. recover orphan inode
 			err = recover_orphan_inode(sbi, ino);
 			if (err) {
 				f2fs_put_page(page, 1);
@@ -732,7 +742,7 @@ static void write_orphan_inodes(struct f2fs_sb_info *sbi, block_t start_blk)
 		f2fs_put_page(page, 1);
 	}
 }
-
+/*从cp_addr中读出cp，校验crc,获取version*/
 static int get_checkpoint_version(struct f2fs_sb_info *sbi, block_t cp_addr,
 		struct f2fs_checkpoint **cp_block, struct page **cp_page,
 		unsigned long long *version)
@@ -741,9 +751,11 @@ static int get_checkpoint_version(struct f2fs_sb_info *sbi, block_t cp_addr,
 	size_t crc_offset = 0;
 	__u32 crc = 0;
 
+	// 1. 从cp_addr中读取f2fs_checkpoint
 	*cp_page = f2fs_get_meta_page(sbi, cp_addr);
 	*cp_block = (struct f2fs_checkpoint *)page_address(*cp_page);
 
+	// 2. checksum_offset = 4092
 	crc_offset = le32_to_cpu((*cp_block)->checksum_offset);
 #ifdef CMO_DEBUG
 	//pr_notice("crc_offset = %d\n",crc_offset);
@@ -768,6 +780,7 @@ static int get_checkpoint_version(struct f2fs_sb_info *sbi, block_t cp_addr,
 	return 0;
 }
 
+// 从cp_addr中读取cp包，得到其version，注意只有当cp包的前后pack.version相同时才有效
 static struct page *validate_checkpoint(struct f2fs_sb_info *sbi,
 				block_t cp_addr, unsigned long long *version)
 {
@@ -779,23 +792,26 @@ static struct page *validate_checkpoint(struct f2fs_sb_info *sbi,
 #ifdef CMO_DEBUG
 	//pr_notice("cp1 = %d",cp_addr);
 #endif
+	// 1. 从cp_addr中读出cp1，得到版本号。整个cp block放入cp_page_1,其中前面的f2fs_checkpoint放入cp_block
+	// f2fs_checkpoint是整个cp block的前面的193B部分
 	err = get_checkpoint_version(sbi, cp_addr, &cp_block,
 					&cp_page_1, version);
 	if (err)
 		goto invalid_cp1;
 	pre_version = *version;
 
+	// 2. 计算第二个cp的地址
 	cp_addr += le32_to_cpu(cp_block->cp_pack_total_block_count) - 1;
 #ifdef CMO_DEBUG
 		//pr_notice("cp2 = %d",cp_addr);
 #endif
-
+	// 3. 从cp_addr中读出cp2, 得到版本号。
 	err = get_checkpoint_version(sbi, cp_addr, &cp_block,
 					&cp_page_2, version);
 	if (err)
 		goto invalid_cp2;
 	cur_version = *version;
-
+	// 只有当前后两个cp_pack相同时才有效
 	if (cur_version == pre_version) {
 		*version = cur_version;
 		f2fs_put_page(cp_page_2, 1);
@@ -807,7 +823,7 @@ invalid_cp1:
 	f2fs_put_page(cp_page_1, 1);
 	return NULL;
 }
-
+/* 读取checkpoint和sit_bitmap_ptr，用来填充sbi->ckpt */
 int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_checkpoint *cp_block;
@@ -820,6 +836,7 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 	block_t cp_blk_no;
 	int i;
 
+	// 说明f2fs_checkpoint可能不只占一个块，后面有cp_payload
 	sbi->ckpt = f2fs_kzalloc(sbi, array_size(blk_size, cp_blks),
 				 GFP_KERNEL);
 	if (!sbi->ckpt)
@@ -832,16 +849,16 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 #ifdef CMO_DEBUG
 	//pr_notice("cp_start_blk_no_1 = %d\n",cp_start_blk_no);
 #endif
-	
+	//1. 从cp1地址读取checkpoint，验证其有效性，包括前后两个pack相同
 	cp1 = validate_checkpoint(sbi, cp_start_blk_no, &cp1_version);
 
 	/* The second checkpoint pack should start at the next segment */
 	cp_start_blk_no += ((unsigned long long)1) <<
 				le32_to_cpu(fsb->log_blocks_per_seg);
 #ifdef CMO_DEBUG
-	//	pr_notice("cp_start_blk_no_1 = %d\n",cp_start_blk_no);
+	//	pr_notice("cp_start_blk_no_1 = %d\n",cp_start_blk_no); = 1024
 #endif
-
+	//2. 从cp2地址读取checkpoint，验证其有效性，包括前后两个pack相同
 	cp2 = validate_checkpoint(sbi, cp_start_blk_no, &cp2_version);
 
 	if (cp1 && cp2) {
@@ -857,10 +874,12 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 		goto fail_no_cp;
 	}
 
+	// 3. 将最新版f2fs_checkpoint拷贝到sbi->ckpt中
 	cp_block = (struct f2fs_checkpoint *)page_address(cur_page);
 	memcpy(sbi->ckpt, cp_block, blk_size);
 
 	/* Sanity checking of checkpoint */
+	// 4. 检查合法性
 	if (f2fs_sanity_check_ckpt(sbi))
 		goto free_fail_no_cp;
 
@@ -872,6 +891,7 @@ int f2fs_get_valid_checkpoint(struct f2fs_sb_info *sbi)
 	if (cp_blks <= 1)
 		goto done;
 
+	// 5. 如果cp_blks大于1，表明后面还有sit_bitmap_ptr，也将其拷贝到sbi->ckpt后面
 	cp_blk_no = le32_to_cpu(fsb->cp_blkaddr);
 	if (cur_page == cp2)
 		cp_blk_no += 1 << le32_to_cpu(fsb->log_blocks_per_seg);

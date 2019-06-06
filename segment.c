@@ -176,7 +176,7 @@ pass:
 found:
 	return result - size + __reverse_ffz(tmp);
 }
-
+/*是否需要调用SSR模式*/
 bool f2fs_need_SSR(struct f2fs_sb_info *sbi)
 {
 	int node_secs = get_blocktype_secs(sbi, F2FS_DIRTY_NODES);
@@ -547,12 +547,12 @@ static int __submit_flush_wait(struct f2fs_sb_info *sbi,
 				test_opt(sbi, FLUSH_MERGE), ret);
 	return ret;
 }
-
+/*将ino的脏数据相关的设备的cache flush下去，并等待flush完成*/
 static int submit_flush_wait(struct f2fs_sb_info *sbi, nid_t ino)
 {
 	int ret = 0;
 	int i;
-
+	// 将设备数据flush下去
 	if (!sbi->s_ndevs)
 		return __submit_flush_wait(sbi, sbi->sb->s_bdev);
 
@@ -565,30 +565,45 @@ static int submit_flush_wait(struct f2fs_sb_info *sbi, nid_t ino)
 	}
 	return ret;
 }
-
+/* flush 线程 */
 static int issue_flush_thread(void *data)
 {
 	struct f2fs_sb_info *sbi = data;
 	struct flush_cmd_control *fcc = SM_I(sbi)->fcc_info;
 	wait_queue_head_t *q = &fcc->flush_wait_queue;
 repeat:
-	if (kthread_should_stop())
+	if (kthread_should_stop())// 进程应该被杀死时，返回0杀死线程
 		return 0;
 
+	/*当从lvm调用 - > freeze_fs进行快照时，它需要确保文件系统的数据不再有更改，但是，之前，像GC线程这样的后台线程并不知道冻结，
+	所以在具有活动后台线程的环境中 ，快照数据变得不稳定。
+	此修补程序通过添加sb_ {start，end} _intwrite来修复此问题:
+	- GC thread
+	- flush thread
+	- discard thread
+	*/
 	sb_start_intwrite(sbi->sb);
-
+	
+	// 1. 如果fcc->issue_list非空
 	if (!llist_empty(&fcc->issue_list)) {
 		struct flush_cmd *cmd, *next;
 		int ret;
 
+		// 2. 从fcc->issue_list中取出所有flush命令
+		// 3. 将最新的cmd放在最前面，这样保证最新的cmd在第5步中快速完成，加快f2fs_issue_flush
+		//    中wait_for_completion(&cmd.wait);
 		fcc->dispatch_list = llist_del_all(&fcc->issue_list);
 		fcc->dispatch_list = llist_reverse_order(fcc->dispatch_list);
 
 		cmd = llist_entry(fcc->dispatch_list, struct flush_cmd, llnode);
 
+		// 4. 按照f2fs_issue_flush的代码，这边应该是类似flush_merge，
+		// 这边的issue_list应该是同一设备的多个flush命令,所以只需要获取其中个cmd，将设备
+		// 数据全部刷下去即可
 		ret = submit_flush_wait(sbi, cmd->ino);
 		atomic_inc(&fcc->issued_flush);
 
+		// 5. 将所有fcc->dispatch_list中cmd置为完成
 		llist_for_each_entry_safe(cmd, next,
 					  fcc->dispatch_list, llnode) {
 			cmd->ret = ret;
@@ -601,6 +616,7 @@ repeat:
 
 	wait_event_interruptible(*q,
 		kthread_should_stop() || !llist_empty(&fcc->issue_list));
+	//睡眠，直到其中一个条件为真，即要么此线程应当停止，要么issue_list非空时唤醒线程。
 	goto repeat;
 }
 
@@ -626,7 +642,7 @@ int f2fs_issue_flush(struct f2fs_sb_info *sbi, nid_t ino)
 		atomic_inc(&fcc->issued_flush);
 		return ret;
 	}
-
+	// merge请求，一个设备多个flush请求
 	cmd.ino = ino;
 	init_completion(&cmd.wait);
 
@@ -668,6 +684,7 @@ int f2fs_issue_flush(struct f2fs_sb_info *sbi, nid_t ino)
 	return cmd.ret;
 }
 
+/* 创建flush线程 */
 int f2fs_create_flush_cmd_control(struct f2fs_sb_info *sbi)
 {
 	dev_t dev = sbi->sb->s_bdev->bd_dev;
@@ -689,12 +706,12 @@ int f2fs_create_flush_cmd_control(struct f2fs_sb_info *sbi)
 	init_waitqueue_head(&fcc->flush_wait_queue);
 	init_llist_head(&fcc->issue_list);
 	SM_I(sbi)->fcc_info = fcc;
-	if (!test_opt(sbi, FLUSH_MERGE))
+	if (!test_opt(sbi, FLUSH_MERGE))//没有进入这个if
 		return err;
 
 init_thread:
 	fcc->f2fs_issue_flush = kthread_run(issue_flush_thread, sbi,
-				"f2fs_flush-%u:%u", MAJOR(dev), MINOR(dev));
+				"f2fs_flush-%u:%u", MAJOR(dev), MINOR(dev));// kthread_run:创建并启动一个内核线程
 	if (IS_ERR(fcc->f2fs_issue_flush)) {
 		err = PTR_ERR(fcc->f2fs_issue_flush);
 		kfree(fcc);
@@ -742,20 +759,20 @@ int f2fs_flush_device_cache(struct f2fs_sb_info *sbi)
 
 	return ret;
 }
-
+// 将相应segno的dirty_type的dirty_segmap[]置为dirty
 static void __locate_dirty_segment(struct f2fs_sb_info *sbi, unsigned int segno,
 		enum dirty_type dirty_type)
 {
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 
 	/* need not be added */
-	if (IS_CURSEG(sbi, segno))
+	if (IS_CURSEG(sbi, segno))//因为已经置为dirty了
 		return;
 
 	if (!test_and_set_bit(segno, dirty_i->dirty_segmap[dirty_type]))
 		dirty_i->nr_dirty[dirty_type]++;
 
-	if (dirty_type == DIRTY) {
+	if (dirty_type == DIRTY) {// 通过segno得到type，然后置对应的dirty_segmap为脏
 		struct seg_entry *sentry = get_seg_entry(sbi, segno);
 		enum dirty_type t = sentry->type;
 
@@ -767,15 +784,17 @@ static void __locate_dirty_segment(struct f2fs_sb_info *sbi, unsigned int segno,
 			dirty_i->nr_dirty[t]++;
 	}
 }
-
+/*将segno从dirty_segmap[dirty_type]中移除*/
 static void __remove_dirty_segment(struct f2fs_sb_info *sbi, unsigned int segno,
 		enum dirty_type dirty_type)
 {
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 
+	// 1. 将segno从dirty_i->dirty_segmap[dirty_type]中移除
 	if (test_and_clear_bit(segno, dirty_i->dirty_segmap[dirty_type]))
 		dirty_i->nr_dirty[dirty_type]--;
 
+	// 2. 如果dirty_type == Dirty,则根据segno找到其dirty_type,并清除，如果有效块为0，则将victim_secmap置0，表示可以作为victim
 	if (dirty_type == DIRTY) {
 		struct seg_entry *sentry = get_seg_entry(sbi, segno);
 		enum dirty_type t = sentry->type;
@@ -887,7 +906,7 @@ static void __detach_discard_cmd(struct discard_cmd_control *dcc,
 
 	atomic_dec(&dcc->discard_cmd_cnt);
 }
-
+/*将discard命令从链表中移除，清除内存等 */
 static void __remove_discard_cmd(struct f2fs_sb_info *sbi,
 							struct discard_cmd *dc)
 {
@@ -943,7 +962,7 @@ static void __check_sit_bitmap(struct f2fs_sb_info *sbi,
 	}
 #endif
 }
-
+/*根据传入的discard_type和granularity，填充dpolicy*/
 static void __init_discard_policy(struct f2fs_sb_info *sbi,
 				struct discard_policy *dpolicy,
 				int discard_type, unsigned int granularity)
@@ -981,6 +1000,7 @@ static void __init_discard_policy(struct f2fs_sb_info *sbi,
 
 
 /* this function is copied from blkdev_issue_discard from block/blk-lib.c */
+/* 按照dpolicy发送discard命令 */
 static void __submit_discard_cmd(struct f2fs_sb_info *sbi,
 						struct discard_policy *dpolicy,
 						struct discard_cmd *dc)
@@ -999,6 +1019,7 @@ static void __submit_discard_cmd(struct f2fs_sb_info *sbi,
 
 	trace_f2fs_issue_discard(dc->bdev, dc->start, dc->len);
 
+	// 1. 生成所需discard的bio
 	dc->error = __blkdev_issue_discard(dc->bdev,
 				SECTOR_FROM_BLOCK(dc->start),
 				SECTOR_FROM_BLOCK(dc->len),
@@ -1008,6 +1029,7 @@ static void __submit_discard_cmd(struct f2fs_sb_info *sbi,
 		dc->state = D_SUBMIT;
 		atomic_inc(&dcc->issued_discard);
 		atomic_inc(&dcc->issing_discard);
+		// 2. 设置bio其他参数
 		if (bio) {
 			bio->bi_private = dc;
 			bio->bi_end_io = f2fs_submit_discard_endio;
@@ -1015,6 +1037,7 @@ static void __submit_discard_cmd(struct f2fs_sb_info *sbi,
 	#ifdef AMF_PMU
 			atomic64_add(bio_sectors (bio) / 8, &sbi->pmu.discard_count);
 	#endif
+		// 3. 提交discard bio
 			submit_bio(bio);
 			list_move_tail(&dc->list, wait_list);
 			__check_sit_bitmap(sbi, dc->start, dc->start + dc->len);
@@ -1211,6 +1234,7 @@ static int __issue_discard_cmd(struct f2fs_sb_info *sbi,
 	int i, iter = 0, issued = 0;
 	bool io_interrupted = false;
 
+	// 1. 遍历所有pend_list
 	for (i = MAX_PLIST_NUM - 1; i >= 0; i--) {
 		if (i + 1 < dpolicy->granularity)
 			break;
@@ -1222,15 +1246,19 @@ static int __issue_discard_cmd(struct f2fs_sb_info *sbi,
 		f2fs_bug_on(sbi,
 			!f2fs_check_rb_tree_consistence(sbi, &dcc->root));
 		blk_start_plug(&plug);
+
+		// 2. 对每个pend_list中的每个discard_cmd
 		list_for_each_entry_safe(dc, tmp, pend_list, list) {
 			f2fs_bug_on(sbi, dc->state != D_PREP);
 
+			// 3. 如果io_aware，则仅在空闲时发discard
 			if (dpolicy->io_aware && i < dpolicy->io_aware_gran &&
 								!is_idle(sbi)) {
 				io_interrupted = true;
 				goto skip;
 			}
 
+			// 4. 按照dpolicy发送discard命令
 			__submit_discard_cmd(sbi, dpolicy, dc);
 			issued++;
 skip:
@@ -1297,7 +1325,7 @@ static unsigned int __wait_one_discard_bio(struct f2fs_sb_info *sbi,
 
 	return len;
 }
-
+/*等待discard_cmd完成*/
 static unsigned int __wait_discard_cmd_range(struct f2fs_sb_info *sbi,
 						struct discard_policy *dpolicy,
 						block_t start, block_t end)
@@ -1338,7 +1366,7 @@ next:
 
 	return trimmed;
 }
-
+/*等待discard_cmd完成*/
 static void __wait_all_discard_cmd(struct f2fs_sb_info *sbi,
 						struct discard_policy *dpolicy)
 {
@@ -1418,37 +1446,48 @@ static int issue_discard_thread(void *data)
 	unsigned int wait_ms = DEF_MIN_DISCARD_ISSUE_TIME;
 	int issued;
 
-	set_freezable();
+	set_freezable();// 申明线程可被冻结
 
 	do {
+		// 1. 根据discard_type和granularity填充dpolicy字段，如discard最小间隔时间
 		__init_discard_policy(sbi, &dpolicy, DPOLICY_BG,
 					dcc->discard_granularity);
 
+		// 2.设置唤醒条件
 		wait_event_interruptible_timeout(*q,
-				kthread_should_stop() || freezing(current) ||
+				kthread_should_stop() || freezing(current) || //系统处于freezing状态
 				dcc->discard_wake,
 				msecs_to_jiffies(wait_ms));
 
-		if (dcc->discard_wake)
+		if (dcc->discard_wake)	// 如果是由于discard_wake唤醒，则先将discard_wake置为0，再执行后面程序
 			dcc->discard_wake = 0;
 
-		if (try_to_freeze())
-			continue;
+		if (try_to_freeze())/* 如果由于freezing(current)唤醒，则try_to_freeze()进入冻结态（应该是只有freezing的才能进入）
+			continue;		内核线程和workqueue默认是不能被冻结的，少数内核线程和workqueue在创建的时指定了freezable标志。
+							这些任务需要对freeze状态进行判断，当系统进入freezing时，可以通过调用freezing来判断freezing状态，
+							并主动调用，try_to_freeze进入冻结；
+									if (freezing(current)) {
+                    					if (try_to_freeze())
+                 	           				continue;
+            						}*/    
+		
 		if (f2fs_readonly(sbi->sb))
 			continue;
-		if (kthread_should_stop())
+		if (kthread_should_stop()) // 如果是kthread_should_stop()唤醒条件，则终结进程
 			return 0;
 		if (is_sbi_flag_set(sbi, SBI_NEED_FSCK)) {
 			wait_ms = dpolicy.max_interval;
 			continue;
 		}
-
+		// 3. 如果需要紧急GC，则变换dpolicy
 		if (sbi->gc_mode == GC_URGENT)
 			__init_discard_policy(sbi, &dpolicy, DPOLICY_FORCE, 1);
 
 		sb_start_intwrite(sbi->sb);
 
+		// 4. 根据discard policy发出discard_cmd
 		issued = __issue_discard_cmd(sbi, &dpolicy);
+		// 5. 等待discard_cmd完成
 		if (issued > 0) {
 			__wait_all_discard_cmd(sbi, &dpolicy);
 			wait_ms = dpolicy.min_interval;
@@ -2005,17 +2044,18 @@ struct page *f2fs_get_sum_page(struct f2fs_sb_info *sbi, unsigned int segno)
 {
 	return f2fs_get_meta_page(sbi, GET_SUM_BLOCK(sbi, segno));
 }
-
+/*更新meta_page*/
 void f2fs_update_meta_page(struct f2fs_sb_info *sbi,
 					void *src, block_t blk_addr)
-{
+{	
+	// 1. 获取稳定的最新的meta_mapping中的meta page
 	struct page *page = f2fs_grab_meta_page(sbi, blk_addr);
-
+	// 2. 更新meta page
 	memcpy(page_address(page), src, PAGE_SIZE);
 	set_page_dirty(page);
 	f2fs_put_page(page, 1);
 }
-
+// 更新sum_blk
 static void write_sum_page(struct f2fs_sb_info *sbi,
 			struct f2fs_summary_block *sum_blk, block_t blk_addr)
 {
@@ -2054,7 +2094,7 @@ static int is_next_segment_free(struct f2fs_sb_info *sbi, int type)
 	unsigned int segno = curseg->segno + 1;
 	struct free_segmap_info *free_i = FREE_I(sbi);
 
-	if (segno < MAIN_SEGS(sbi) && segno % sbi->segs_per_sec)
+	if (segno < MAIN_SEGS(sbi) && segno % sbi->segs_per_sec)// 岂不是都为0？
 		return !test_bit(segno, free_i->free_segmap);
 	return 0;
 }
@@ -2062,6 +2102,9 @@ static int is_next_segment_free(struct f2fs_sb_info *sbi, int type)
 /*
  * Find a new segment from the free segments bitmap to right order
  * This function should be returned with success, otherwise BUG
+ *
+ * 从free_segmap中按指定的order找到一个新的segment
+ * 加（）为主路线，总之一般是alloc_right，从free_secmap中分配新的segment（因为sec==seg)
  */
 static void get_new_segment(struct f2fs_sb_info *sbi,
 			unsigned int *newseg, bool new_sec, int dir)
@@ -2078,6 +2121,7 @@ static void get_new_segment(struct f2fs_sb_info *sbi,
 
 	spin_lock(&free_i->segmap_lock);
 
+	// 1. !new_sec：即不用在新的sec中分配，且下一个待分配seg不跨越section，则从本section中分配下一个segments
 	if (!new_sec && ((*newseg + 1) % sbi->segs_per_sec)) {
 		segno = find_next_zero_bit(free_i->free_segmap,
 			GET_SEG_FROM_SEC(sbi, hint + 1), *newseg + 1);
@@ -2085,20 +2129,24 @@ static void get_new_segment(struct f2fs_sb_info *sbi,
 			goto got_it;
 	}
 find_other_zone:
+	// (2). ***先从本次new_seg提供位置开始找一个空闲的secno*** 
 	secno = find_next_zero_bit(free_i->free_secmap, MAIN_SECS(sbi), hint);
 	if (secno >= MAIN_SECS(sbi)) {
+		// 2.1 如果没找到，如果方向是right，则从0开始找，还是没找到则bug
 		if (dir == ALLOC_RIGHT) {
 			secno = find_next_zero_bit(free_i->free_secmap,
 							MAIN_SECS(sbi), 0);
 			f2fs_bug_on(sbi, secno >= MAIN_SECS(sbi));
+		// 2.2 如果方向是left，则设置go_left = 1
 		} else {
 			go_left = 1;
 			left_start = hint - 1;
 		}
 	}
-	if (go_left == 0)
+	if (go_left == 0)// 即向右找到了secno
 		goto skip_left;
 
+	// 3. 方向是left：从当前位置向左找，找不到则在全局找
 	while (test_bit(left_start, free_i->free_secmap)) {
 		if (left_start > 0) {
 			left_start--;
@@ -2111,12 +2159,14 @@ find_other_zone:
 	}
 	secno = left_start;
 skip_left:
+	// (4). 总之，目前得到的secno是向左或向右找到的空闲section
 	segno = GET_SEG_FROM_SEC(sbi, secno);
 	zoneno = GET_ZONE_FROM_SEC(sbi, secno);
 
 	/* give up on finding another zone */
 	if (!init)
 		goto got_it;
+	// (5). 得到想要值
 	if (sbi->secs_per_zone == 1)
 		goto got_it;
 	if (zoneno == old_zoneno)
@@ -2127,6 +2177,7 @@ skip_left:
 		if (go_left && zoneno == 0)
 			goto got_it;
 	}
+	// 6. 如果当前zone已经被使用，则查找下一个新的zone
 	for (i = 0; i < NR_CURSEG_TYPE; i++)
 		if (CURSEG_I(sbi, i)->zone == zoneno)
 			break;
@@ -2144,12 +2195,13 @@ skip_left:
 	}
 got_it:
 	/* set it as dirty segment in free segmap */
+	// (7). 找到seg
 	f2fs_bug_on(sbi, test_bit(segno, free_i->free_segmap));
 	__set_inuse(sbi, segno);
 	*newseg = segno;
 	spin_unlock(&free_i->segmap_lock);
 }
-
+/*将curseg置位，切换到新的segment*/
 static void reset_curseg(struct f2fs_sb_info *sbi, int type, int modified)
 {
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
@@ -2168,21 +2220,24 @@ static void reset_curseg(struct f2fs_sb_info *sbi, int type, int modified)
 		SET_SUM_TYPE(sum_footer, SUM_TYPE_NODE);
 	__set_sit_entry_type(sbi, type, curseg->segno, modified);
 }
-
+/*应该是确定从哪里开始选取next_segno*/
 static unsigned int __get_next_segno(struct f2fs_sb_info *sbi, int type)
 {
 	/* if segs_per_sec is large than 1, we need to keep original policy. */
+	// 1. 如果segs_per_sec比1大，则从当前segno开始查找下一个seg
 	if (sbi->segs_per_sec != 1)
 		return CURSEG_I(sbi, type)->segno;
 
-	if (test_opt(sbi, NOHEAP) &&
+	// 2. 如果当前type==curseg_hot_data或为node类型，则从第0个segment开始找
+	if (test_opt(sbi, NOHEAP) &&	// 一般是noheap
 		(type == CURSEG_HOT_DATA || IS_NODESEG(type)))
 		return 0;
 
+	// 3. 如果记录了上一个segment，则从上一次开始分配
 	if (SIT_I(sbi)->last_victim[ALLOC_NEXT])
 		return SIT_I(sbi)->last_victim[ALLOC_NEXT];
 
-	/* find segments from 0 to reuse freed segments */
+	/**** find segments from 0 to reuse freed segments *****/
 	if (F2FS_OPTION(sbi).alloc_mode == ALLOC_MODE_REUSE)
 		return 0;
 
@@ -2192,6 +2247,7 @@ static unsigned int __get_next_segno(struct f2fs_sb_info *sbi, int type)
 /*
  * Allocate a current working segment.
  * This function always allocates a free segment in LFS manner.
+ * 分配一个新的seg,结果存放早curseg->next_segno中，且curseg->alloc_type = LFS
  */
 static void new_curseg(struct f2fs_sb_info *sbi, int type, bool new_sec)
 {
@@ -2199,21 +2255,24 @@ static void new_curseg(struct f2fs_sb_info *sbi, int type, bool new_sec)
 	unsigned int segno = curseg->segno;
 	int dir = ALLOC_LEFT;
 
+	// 1. 将当前旧的curseg->sum_blk写到磁盘
 	write_sum_page(sbi, curseg->sum_blk,
 				GET_SUM_BLOCK(sbi, segno));
 	if (type == CURSEG_WARM_DATA || type == CURSEG_COLD_DATA)
 		dir = ALLOC_RIGHT;
 
-	if (test_opt(sbi, NOHEAP))
+	if (test_opt(sbi, NOHEAP))// 好像是true
 		dir = ALLOC_RIGHT;
-
+	// 2. 应该是得到下一个查找开始点
 	segno = __get_next_segno(sbi, type);
+	// 3. 从free_segmap中按指定的order找到一个新的segment
 	get_new_segment(sbi, &segno, new_sec, dir);
+	// 4. 结果存放进next_segno中
 	curseg->next_segno = segno;
 	reset_curseg(sbi, type, 1);
 	curseg->alloc_type = LFS;
 }
-
+/*得到segment中下一个空闲块地址*/
 static void __next_free_blkoff(struct f2fs_sb_info *sbi,
 			struct curseg_info *seg, block_t start)
 {
@@ -2249,6 +2308,8 @@ static void __refresh_next_blkoff(struct f2fs_sb_info *sbi,
 /*
  * This function always allocates a used segment(from dirty seglist) by SSR
  * manner, so it should recover the existing segment information of valid blocks
+ * 
+ * 切换curseg，设置其中的sum_blk、free_segmap、next_blkoff等
  */
 static void change_curseg(struct f2fs_sb_info *sbi, int type)
 {
@@ -2258,25 +2319,30 @@ static void change_curseg(struct f2fs_sb_info *sbi, int type)
 	struct f2fs_summary_block *sum_node;
 	struct page *sum_page;
 
+	//1. 将当前curseg的sum_blk写到磁盘
 	write_sum_page(sbi, curseg->sum_blk,
 				GET_SUM_BLOCK(sbi, curseg->segno));
+	// 2. 将new_segno处的free_segmap置为使用（1）
 	__set_test_and_inuse(sbi, new_segno);
 
 	mutex_lock(&dirty_i->seglist_lock);
+	// 3. 将new_segno从obsolete segments和其对应的dirty_segmap[dirty_type]中移除
 	__remove_dirty_segment(sbi, new_segno, PRE);
 	__remove_dirty_segment(sbi, new_segno, DIRTY);
 	mutex_unlock(&dirty_i->seglist_lock);
 
 	reset_curseg(sbi, type, 1);
 	curseg->alloc_type = SSR;
+	// 4. 从curseg的segno中得到下一个空闲块地址，放入seg->next_blkoff中
 	__next_free_blkoff(sbi, curseg, 0);
 
+	// 5.从磁盘中读取sum_page放入curseg->sum->blk中
 	sum_page = f2fs_get_sum_page(sbi, new_segno);
 	sum_node = (struct f2fs_summary_block *)page_address(sum_page);
 	memcpy(curseg->sum_blk, sum_node, SUM_ENTRY_SIZE);
 	f2fs_put_page(sum_page, 1);
 }
-
+/*SSR模式下得到下一个segment，通过调用对应type的get_victim(),结果放在curseg->next_segno中*/
 static int get_ssr_segment(struct f2fs_sb_info *sbi, int type)
 {
 	struct curseg_info *curseg = CURSEG_I(sbi, type);
@@ -2286,25 +2352,28 @@ static int get_ssr_segment(struct f2fs_sb_info *sbi, int type)
 	bool reversed = false;
 
 	/* f2fs_need_SSR() already forces to do this */
+	// 1. 调用get_victim()函数得到下一个segno，SSR模式不用擦除
 	if (v_ops->get_victim(sbi, &segno, BG_GC, type, SSR)) {
 		curseg->next_segno = segno;
 		return 1;
 	}
 
 	/* For node segments, let's do SSR more intensively */
+	// 2. 如果是NODESEG
 	if (IS_NODESEG(type)) {
-		if (type >= CURSEG_WARM_NODE) {
+		if (type >= CURSEG_WARM_NODE) {// 如果type==warm_node或cold_node,则分别从hot_node和warm_node中分配下一个，即提升一个热度分配
 			reversed = true;
 			i = CURSEG_COLD_NODE;
-		} else {
+		} else {// 如果type == hot_node,那只能还是从hot_node中分配
 			i = CURSEG_HOT_NODE;
 		}
 		cnt = NR_CURSEG_NODE_TYPE;
+	// 3. 如果是DATASEG
 	} else {
-		if (type >= CURSEG_WARM_DATA) {
+		if (type >= CURSEG_WARM_DATA) {// 如果type==warm_data或cold_data,则分别从hot_data和warm_data中分配下一个
 			reversed = true;
 			i = CURSEG_COLD_DATA;
-		} else {
+		} else {//如果type == hot_data,则还是从hot_data中分配
 			i = CURSEG_HOT_DATA;
 		}
 		cnt = NR_CURSEG_DATA_TYPE;
@@ -2324,6 +2393,10 @@ static int get_ssr_segment(struct f2fs_sb_info *sbi, int type)
 /*
  * flush out current segment and replace it with new segment
  * This function should be returned with success, otherwise BUG
+ * segment选择算法：
+ * 将当前segment flush下去，用新的segment代替
+ * LFS：调用new_curseg()从free_secmap和free_segmap中分配
+ * SSR: 调用get_ssr_segment()中对应type的get_victim()中分配
  */
 static void allocate_segment_by_default(struct f2fs_sb_info *sbi,
 						int type, bool force)
@@ -2343,6 +2416,7 @@ static void allocate_segment_by_default(struct f2fs_sb_info *sbi,
 	else if (curseg->alloc_type == LFS && is_next_segment_free(sbi, type))
 		new_curseg(sbi, type, false);
 #ifndef AMF_NO_SSR
+	// SSR：如果需要SSR，则通过get_ssr_segment选取下一个segment，放入curseg->next_segno中，并进行curseg切换
 	else if (f2fs_need_SSR(sbi) && get_ssr_segment(sbi, type))
 		change_curseg(sbi, type);
 #endif
@@ -2597,11 +2671,11 @@ int f2fs_rw_hint_to_seg_type(enum rw_hint hint)
  * WRITE_LIFE_MEDIUM     "                        WRITE_LIFE_MEDIUM
  * WRITE_LIFE_LONG       "                        WRITE_LIFE_LONG
  */
-
+// 根据F2FS_OPTION(sbi).whint_mode选择不同传递hint的方式
 enum rw_hint f2fs_io_type_to_rw_hint(struct f2fs_sb_info *sbi,
 				enum page_type type, enum temp_type temp)
 {
-	if (F2FS_OPTION(sbi).whint_mode == WHINT_MODE_USER) {
+	if (F2FS_OPTION(sbi).whint_mode == WHINT_MODE_USER) {//按照用户方式传递
 		if (type == DATA) {
 			if (temp == WARM)
 				return WRITE_LIFE_NOT_SET;
@@ -2612,7 +2686,7 @@ enum rw_hint f2fs_io_type_to_rw_hint(struct f2fs_sb_info *sbi,
 		} else {
 			return WRITE_LIFE_NOT_SET;
 		}
-	} else if (F2FS_OPTION(sbi).whint_mode == WHINT_MODE_FS) {
+	} else if (F2FS_OPTION(sbi).whint_mode == WHINT_MODE_FS) {//按照F2FS划分策略传递
 		if (type == DATA) {
 			if (temp == WARM)
 				return WRITE_LIFE_LONG;
@@ -2999,7 +3073,7 @@ void f2fs_replace_block(struct f2fs_sb_info *sbi, struct dnode_of_data *dn,
 
 	f2fs_update_data_blkaddr(dn, new_addr);
 }
-
+// 如果page在sbi->write_io[type]中被merge，则将sbi->write_io[type]全部提交,并等待写回或稳定
 void f2fs_wait_on_page_writeback(struct page *page,
 				enum page_type type, bool ordered)
 {
@@ -3087,7 +3161,7 @@ static void read_compacted_summaries(struct f2fs_sb_info *sbi)
 	}
 	f2fs_put_page(page, 1);
 }
-
+/*恢复type类型的curseg的journal、summary、footer等字段。通过ckpt中curseg的segment、block号和其summary_block恢复。*/
 static int read_normal_summaries(struct f2fs_sb_info *sbi, int type)
 {
 	struct f2fs_checkpoint *ckpt = F2FS_CKPT(sbi);
@@ -3099,6 +3173,7 @@ static int read_normal_summaries(struct f2fs_sb_info *sbi, int type)
 	block_t blk_addr = 0;
 
 	/* get segment number and block addr */
+	// 1. 得到curseg的segment号和其summary的block号
 	if (IS_DATASEG(type)) {
 		segno = le32_to_cpu(ckpt->cur_data_segno[type]);
 		blk_off = le16_to_cpu(ckpt->cur_data_blkoff[type -
@@ -3114,7 +3189,7 @@ static int read_normal_summaries(struct f2fs_sb_info *sbi, int type)
 							CURSEG_HOT_NODE]);
 		if (__exist_node_summaries(sbi))
 			blk_addr = sum_blk_addr(sbi, NR_CURSEG_NODE_TYPE,
-							type - CURSEG_HOT_NODE);
+							type - CURSEG_HOT_NODE);// 514+type
 		else
 			blk_addr = GET_SUM_BLOCK(sbi, segno);
 	}
@@ -3131,11 +3206,13 @@ static int read_normal_summaries(struct f2fs_sb_info *sbi, int type)
 				ns->ofs_in_node = 0;
 			}
 		} else {
+			//通过segno号填充sum（f2fs_summary_block)的nid字段
 			f2fs_restore_node_summary(sbi, segno, sum);
 		}
 	}
 
 	/* set uncompleted segment to curseg */
+	// 通过summary_block填充curseg的jouranl、sum_blk、footer字段
 	curseg = CURSEG_I(sbi, type);
 	mutex_lock(&curseg->curseg_mutex);
 
@@ -3154,7 +3231,7 @@ static int read_normal_summaries(struct f2fs_sb_info *sbi, int type)
 	f2fs_put_page(new, 1);
 	return 0;
 }
-
+// 利用ckpt信息恢复所有curseg中其他信息，如journal、sum_blk、foot
 static int restore_curseg_summaries(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_journal *sit_j = CURSEG_I(sbi, CURSEG_COLD_DATA)->journal;
@@ -3162,7 +3239,9 @@ static int restore_curseg_summaries(struct f2fs_sb_info *sbi)
 	int type = CURSEG_HOT_DATA;
 	int err;
 
-	if (is_set_ckpt_flags(sbi, CP_COMPACT_SUM_FLAG)) {
+	// 1. 如果cp中设置了CP_COMPACT_SUM_FLAG
+	if (is_set_ckpt_flags(sbi, CP_COMPACT_SUM_FLAG)) {// enter
+		// 从ckpt得到冷热温数据所有有效block的数目
 		int npages = f2fs_npages_for_summary_flush(sbi, true);
 
 		if (npages >= 2)
@@ -3170,14 +3249,16 @@ static int restore_curseg_summaries(struct f2fs_sb_info *sbi)
 							META_CP, true);
 
 		/* restore for compacted data summary */
+		// 2. 从compacted data summary中恢复data curseg
 		read_compacted_summaries(sbi);
 		type = CURSEG_HOT_NODE;//curseg_data的数据读取完毕，后面summary从node开始
 	}
 
-	if (__exist_node_summaries(sbi))
+	if (__exist_node_summaries(sbi))// enter
 		f2fs_ra_meta_pages(sbi, sum_blk_addr(sbi, NR_CURSEG_TYPE, type),
 					NR_CURSEG_TYPE - type, META_CP, true);
 
+	// 3. 根据ckpt中信息恢复curseg中journal、summary、foot字段信息
 	for (; type <= CURSEG_COLD_NODE; type++) {
 		err = read_normal_summaries(sbi, type);
 		if (err)
@@ -3276,6 +3357,7 @@ void f2fs_write_node_summaries(struct f2fs_sb_info *sbi, block_t start_blk)
 	write_normal_summaries(sbi, start_blk, CURSEG_HOT_NODE);
 }
 
+/* 在指定type的journal中找val的nid是不是在,在则返回在journal中第几个*/
 int f2fs_lookup_journal_in_cursum(struct f2fs_journal *journal, int type,
 					unsigned int val, int alloc)
 {
@@ -3529,6 +3611,7 @@ out:
 	set_prefree_as_free_segments(sbi);
 }
 
+/*设置sbi->sm_info->sit_info，控制segment分配*/
 static int build_sit_info(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_super_block *raw_super = F2FS_RAW_SUPER(sbi);
@@ -3537,13 +3620,14 @@ static int build_sit_info(struct f2fs_sb_info *sbi)
 	char *src_bitmap;
 	unsigned int bitmap_size;
 
-	/* allocate memory for SIT information */
+	/* 1. allocate memory for SIT information */
 	sit_i = f2fs_kzalloc(sbi, sizeof(struct sit_info), GFP_KERNEL);
 	if (!sit_i)
 		return -ENOMEM;
 
 	SM_I(sbi)->sit_info = sit_i;
 
+	// 2. 为sit_i中成员分配空间并初始化，sentries, dirty_sentries_bitmap,sec_entries
 	sit_i->sentries =
 		f2fs_kvzalloc(sbi, array_size(sizeof(struct seg_entry),
 					      MAIN_SEGS(sbi)),
@@ -3599,6 +3683,7 @@ static int build_sit_info(struct f2fs_sb_info *sbi)
 	sit_segs = le32_to_cpu(raw_super->segment_count_sit) >> 1;
 
 	/* setup SIT bitmap from ckeckpoint pack */
+	// 3. 从checkpoint pack中提取sit bitmap信息
 	bitmap_size = __bitmap_size(sbi, SIT_BITMAP);
 	src_bitmap = __bitmap_ptr(sbi, SIT_BITMAP);
 
@@ -3613,6 +3698,7 @@ static int build_sit_info(struct f2fs_sb_info *sbi)
 #endif
 
 	/* init SIT information */
+	// 4. 设置sit信息，尤其是segment_allocation算法
 	sit_i->s_ops = &default_salloc_ops;
 
 	sit_i->sit_base_addr = le32_to_cpu(raw_super->sit_blkaddr);
@@ -3626,7 +3712,7 @@ static int build_sit_info(struct f2fs_sb_info *sbi)
 	init_rwsem(&sit_i->sentry_lock);
 	return 0;
 }
-
+/* 初始化sbi->sm_info->free_info*/
 static int build_free_segmap(struct f2fs_sb_info *sbi)
 {
 	struct free_segmap_info *free_i;
@@ -3654,18 +3740,19 @@ static int build_free_segmap(struct f2fs_sb_info *sbi)
 	memset(free_i->free_secmap, 0xff, sec_bitmap_size);
 
 	/* init free segmap information */
-	free_i->start_segno = GET_SEGNO_FROM_SEG0(sbi, MAIN_BLKADDR(sbi));//从main area开始的segment号，即0
+	free_i->start_segno = GET_SEGNO_FROM_SEG0(sbi, MAIN_BLKADDR(sbi));//从seg0(cp_addr)开始的segno号，即main_addr到seg0的segno=91648/512=179
 	free_i->free_segments = 0;
 	free_i->free_sections = 0;
 	spin_lock_init(&free_i->segmap_lock);
 	return 0;
 }
-
+/*恢复所有curseg内容。创建curseg空间并利用ckpt中信息恢复curseg->journal、sum_blk、footer、segno等信息*/
 static int build_curseg(struct f2fs_sb_info *sbi)
 {
 	struct curseg_info *array;
 	int i;
 
+	// 1. 创建curseg的空间
 	array = f2fs_kzalloc(sbi, array_size(NR_CURSEG_TYPE, sizeof(*array)),
 			     GFP_KERNEL);
 	if (!array)
@@ -3686,9 +3773,10 @@ static int build_curseg(struct f2fs_sb_info *sbi)
 		array[i].segno = NULL_SEGNO;
 		array[i].next_blkoff = 0;
 	}
+	// 2. 利用ckpt中信息恢复curseg->journal、sum_blk、footer、segno等信息
 	return restore_curseg_summaries(sbi);
 }
-
+/*构建sbi->sm_info->sit_info->sentries[]的信息，从META_SIT和curseg_cold_data->journal中读取sit信息*/
 static int build_sit_entries(struct f2fs_sb_info *sbi)
 {
 	struct sit_info *sit_i = SIT_I(sbi);
@@ -3702,7 +3790,7 @@ static int build_sit_entries(struct f2fs_sb_info *sbi)
 	int err = 0;
 	block_t total_node_blocks = 0;
 
-	//1. 扫描一遍sit，根据sit信息恢复sit_i->sentries[]信息
+	//1. 扫描一遍sit，根据sit信息恢复sit_i->sentries[]信息，说明SIT是按顺序存放
 	do {
 		readed = f2fs_ra_meta_pages(sbi, start_blk, BIO_MAX_PAGES,
 							META_SIT, true);
@@ -3809,7 +3897,7 @@ static int build_sit_entries(struct f2fs_sb_info *sbi)
 
 	return err;
 }
-
+// 根据sit信息初始化free_segmap,free_secmap,并将curseg的segno置为使用1
 static void init_free_segmap(struct f2fs_sb_info *sbi)
 {
 	unsigned int start;
@@ -3830,7 +3918,7 @@ static void init_free_segmap(struct f2fs_sb_info *sbi)
 		__set_test_and_inuse(sbi, curseg_t->segno);
 	}
 }
-
+/*通过free_segmap设置dirty_segmap[]*/
 static void init_dirty_segmap(struct f2fs_sb_info *sbi)
 {
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
@@ -3897,6 +3985,7 @@ static int build_dirty_segmap(struct f2fs_sb_info *sbi)
 
 /*
  * Update min, max modified time for cost-benefit GC algorithm
+ * 更新sit_i->mtime和max_mtime。用所有segment的最小mtime作为sit_i->mtime，
  */
 static void init_min_max_mtime(struct f2fs_sb_info *sbi)
 {
@@ -3935,6 +4024,7 @@ int f2fs_build_segment_manager(struct f2fs_sb_info *sbi)
 		return -ENOMEM;
 
 	/* init sm info */
+	// 1. 初始化sm_info信息
 	sbi->sm_info = sm_info;
 	sm_info->seg0_blkaddr = le32_to_cpu(raw_super->segment0_blkaddr);
 	sm_info->main_blkaddr = le32_to_cpu(raw_super->main_blkaddr);
@@ -3948,7 +4038,7 @@ int f2fs_build_segment_manager(struct f2fs_sb_info *sbi)
 	if (sm_info->rec_prefree_segments > DEF_MAX_RECLAIM_PREFREE_SEGMENTS)
 		sm_info->rec_prefree_segments = DEF_MAX_RECLAIM_PREFREE_SEGMENTS;
 
-	if (!test_opt(sbi, LFS))
+	if (!test_opt(sbi, LFS))// Enter if
 		sm_info->ipu_policy = 1 << F2FS_IPU_FSYNC;
 	sm_info->min_ipu_util = DEF_MIN_IPU_UTIL;
 	sm_info->min_fsync_blocks = DEF_MIN_FSYNC_BLOCKS;
@@ -3958,37 +4048,42 @@ int f2fs_build_segment_manager(struct f2fs_sb_info *sbi)
 	INIT_LIST_HEAD(&sm_info->sit_entry_set);
 
 	init_rwsem(&sm_info->curseg_lock);
-
+	// 2. 创建flush线程
 	if (!f2fs_readonly(sbi->sb)) {
 		err = f2fs_create_flush_cmd_control(sbi);
 		if (err)
 			return err;
 	}
 
+	// 3. 创建discard线程
 	err = create_discard_cmd_control(sbi);
 	if (err)
 		return err;
-
+	// 4. 建立sit_info，与segment管理和分配有关
 	err = build_sit_info(sbi);
 	if (err)
 		return err;
+	// 5. 初始化sbi->sm_info->free_info结构，内容尚未填充*/
 	err = build_free_segmap(sbi);
 	if (err)
 		return err;
+	// 6. 创建curseg空间，利用ckpt恢复其中journal、sum_blk、segno、blkaddr等信息
 	err = build_curseg(sbi);
 	if (err)
 		return err;
 
 	/* reinit free segmap based on SIT */
+	// 7. 构建SIT信息。读取SIT block和curseg_cold_data->journal中sit信息进行构建
 	err = build_sit_entries(sbi);
 	if (err)
 		return err;
-
+	// 8.通过sit信息设置free_segmap,通过free_segmap设置dirty_segmap[]
 	init_free_segmap(sbi);
 	err = build_dirty_segmap(sbi);
 	if (err)
 		return err;
 
+	// 9. 更新sit_i->mtime和max_mtime
 	init_min_max_mtime(sbi);
 	return 0;
 }

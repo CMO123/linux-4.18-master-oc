@@ -2929,14 +2929,19 @@ static ssize_t f2fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			return -EAGAIN;
 		inode_lock(inode);
 	}
-
-	ret = generic_write_checks(iocb, from); //返回写入数目，字节数
+	// iocb->ki_flags = 0
+	ret = generic_write_checks(iocb, from);//返回待写入的字节数，比如gc.c ret = 28807, 用ll查看gc.c的大小为28807
+	/* touch a.c得到的ret = 0
+	// vim b.c 得到的ret = 4096
+	//	[ 6480.602564] ret=4096
+	*/
 	if (ret > 0) {
 		bool preallocated = false;
 		size_t target_size = 0;
 		int err;
-
-		if (iov_iter_fault_in_readable(from, iov_iter_count(from)))
+		
+		//采用从用户态buffer读一个字节的方式验证用户态数据的合法性，只验证iov_iter中当前的iovec
+		if (iov_iter_fault_in_readable(from, iov_iter_count(from)))// not enter
 			set_inode_flag(inode, FI_NO_PREALLOC);
 
 		if ((iocb->ki_flags & IOCB_NOWAIT) &&
@@ -2951,10 +2956,10 @@ static ssize_t f2fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 						return -EAGAIN;
 				}
 
-		} else {
+		} else {// enter
 			preallocated = true;
-			target_size = iocb->ki_pos + iov_iter_count(from);
-
+			target_size = iocb->ki_pos + iov_iter_count(from);//targetsize=28807
+			//pr_notice("target_size = %d\n",target_size);
 			err = f2fs_preallocate_blocks(iocb, from);
 			if (err) {
 				clear_inode_flag(inode, FI_NO_PREALLOC);
@@ -2962,6 +2967,7 @@ static ssize_t f2fs_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 				return err;
 			}
 		}
+		// 2. 执行文件写入
 		ret = __generic_file_write_iter(iocb, from);
 		clear_inode_flag(inode, FI_NO_PREALLOC);
 

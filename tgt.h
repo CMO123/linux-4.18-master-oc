@@ -73,12 +73,20 @@ static void lightpblk_print_geo(struct nvm_geo *geo){
 		geo->addrf.sec_mask = 0x%llx,geo->addrf.rsv_mask[0] = 0x%llx\n", geo->addrf.ch_len,geo->addrf.lun_len,geo->addrf.chk_len,geo->addrf.sec_len,geo->addrf.rsv_len[0],
 		geo->addrf.ch_offset,geo->addrf.lun_offset,geo->addrf.chk_offset,geo->addrf.sec_offset,geo->addrf.rsv_off[0],
 		geo->addrf.ch_mask,geo->addrf.lun_mask,geo->addrf.chk_mask,geo->addrf.sec_mask,geo->addrf.rsv_mask[0]);
+	struct nvm_addrf_12 *srcppaf = (struct nvm_addrf_12*)&geo->addrf;
+	pr_notice("srcppaf.ch_len = %d, srcppaf.lun_len = %d,srcppaf.blk_len = %d,srcppaf.pg_len = %d,srcppaf.pln_len = %d,srcppaf.sec_len= %d,\
+		srcppaf.ch_offset = %d,srcppaf.lun_offset = %d,srcppaf.blk_offset = %d,srcppaf.pg_offset = %d,srcppaf.pln_offset = %d,\
+		srcppaf.sec_offset = %d,srcppaf.ch_mask = 0x%llx,srcppaf.lun_mask = 0x%llx,srcppaf.blk_mask = 0x%llx,srcppaf.pg_mask = 0x%llx,\
+		srcppaf.pln_mask = 0x%llx,srcppaf.sec_mask = 0x%llx\n", srcppaf->ch_len, srcppaf->lun_len,srcppaf->blk_len,srcppaf->pg_len,srcppaf->pln_len,srcppaf->sec_len,srcppaf->ch_offset,srcppaf->lun_offset,
+		srcppaf->blk_offset,srcppaf->pg_offset,srcppaf->pln_offset,srcppaf->sec_offset,srcppaf->ch_mask,srcppaf->lun_mask,srcppaf->blk_mask,srcppaf->pg_mask,
+		srcppaf->pln_mask,srcppaf->sec_mask);
 
 	pr_notice("geo->vmnt = %d,geo->cap = %d,geo->dom = %d,geo->mtype = %d,geo->fmtype = %d,geo->cpar = %d,geo->mpos = %d, \
 		geo->num_pln = %d,geo->pln_mode = %d,geo->num_pg = %d,geo->fpg_sz = %d\n",geo->vmnt,geo->cap,geo->dom,geo->mtype,geo->fmtype,geo->cpar,geo->mpos,geo->num_pln,
 		geo->pln_mode,geo->num_pg,geo->fpg_sz);
 	
 }
+
 static int tgt_set_ppaf(struct lightpblk* alightpblk)
 {//用于组织自身逻辑设备的地址,类型liblightnvm
 	struct nvm_tgt_dev *dev = alightpblk->tgt_dev;
@@ -104,14 +112,66 @@ static int tgt_set_ppaf(struct lightpblk* alightpblk)
 	dst->pg_len = srcppaf->pg_len;
 	dst->pln_len = srcppaf->pln_len;
 	dst->sec_len = srcppaf->sec_len;
-/*
+
 	dst->sec_offset = 0;
 	dst->pln_offset = dst->sec_len;
 	dst->ch_offset = dst->pln_offset + dst->pln_len;
 	dst->lun_offset = dst->ch_offset + dst->ch_len;
 	dst->pg_offset = dst->lun_offset + dst->lun_len;
 	dst->blk_offset = dst->pg_offset + dst->pg_len;
-*/	
+	
+
+	
+	dst->sec_mask = ((1ULL << srcppaf->sec_len) - 1) << srcppaf->sec_offset;
+	dst->pln_mask = ((1ULL << srcppaf->pln_len) - 1) <<	dst->pln_offset;
+	dst->ch_mask = ((1ULL << srcppaf->ch_len) - 1) <<
+							dst->ch_offset;
+	dst->lun_mask = ((1ULL << srcppaf->lun_len) - 1) <<
+							dst->lun_offset;
+	dst->pg_mask = ((1ULL << srcppaf->pg_len) - 1) <<
+							dst->pg_offset;
+	dst->blk_mask = ((1ULL << srcppaf->blk_len) - 1) <<
+							dst->blk_offset;
+
+	alightpblk->ppaf_bitsize = dst->blk_offset + srcppaf->blk_len;
+	
+	return 0;
+}
+
+/*
+static int tgt_set_ppaf(struct lightpblk* alightpblk)
+{//用于组织自身逻辑设备的地址,类型liblightnvm
+	struct nvm_tgt_dev *dev = alightpblk->tgt_dev;
+	struct nvm_geo *geo = &dev->geo;
+	struct nvm_addrf_12 *srcppaf = (struct nvm_addrf_12*)&geo->addrf;
+	struct nvm_addrf_12 *dst = &alightpblk->ppaf;
+	int power_len;
+
+	power_len = get_count_order(geo->num_ch);
+	if(1 << power_len != geo->num_ch){
+		pr_err("tgt_pblk: supports only power-of-two channel config.\n");
+		return -EINVAL;
+	}
+	
+	dst->ch_len = power_len;
+	power_len = get_count_order(geo->num_lun);
+	if (1 << power_len != geo->num_lun) {
+		pr_err("tgt_pblk: supports only power-of-two LUN config.\n");
+		return -EINVAL;
+	}
+	dst->lun_len = power_len;
+	dst->blk_len = srcppaf->blk_len;
+	dst->pg_len = srcppaf->pg_len;
+	dst->pln_len = srcppaf->pln_len;
+	dst->sec_len = srcppaf->sec_len;
+
+//	dst->sec_offset = 0;
+//	st->pln_offset = dst->sec_len;
+//	dst->ch_offset = dst->pln_offset + dst->pln_len;
+//	dst->lun_offset = dst->ch_offset + dst->ch_len;
+//	dst->pg_offset = dst->lun_offset + dst->lun_len;
+//	dst->blk_offset = dst->pg_offset + dst->pg_len;
+	
 
 	dst->sec_offset = srcppaf->sec_offset;
 	dst->pln_offset = srcppaf->pln_offset;
@@ -134,50 +194,50 @@ static int tgt_set_ppaf(struct lightpblk* alightpblk)
 
 	alightpblk->ppaf_bitsize = dst->blk_offset + srcppaf->blk_len;
 
-	/*pr_notice("ppaf.ch_len = %d, ppaf.lun_len = %d, ppaf.sect_len = %d, ppaf.pln_len = %d, ppaf.pg_len = %d, ppaf.blk_len = %d \n",
-		ppaf.ch_len, ppaf.lun_len, ppaf.sect_len, ppaf.pln_len, ppaf.pg_len, ppaf.blk_len);
-	pr_notice("ppaf.ch_offset = %d, ppaf.lun_offset = %d, ppaf.pln_offset = %d, ppaf.blk_offset = %d, ppaf.pg_offset = %d, ppaf.sect_offset = %d \n",
-		ppaf.ch_offset, ppaf.lun_offset, ppaf.pln_offset, ppaf.blk_offset, ppaf.pg_offset, ppaf.sect_offset);
-	*/
-	/*
-		ppaf.ch_len = 3, ppaf.lun_len = 0, ppaf.sect_len = 0, ppaf.pln_len = 0, ppaf.pg_len = 9, ppaf.blk_len = 10 
-		[  675.646464] ppaf.ch_offset = 19, ppaf.lun_offset = 19, ppaf.pln_offset = 0, ppaf.blk_offset = 9, ppaf.pg_offset = 0, ppaf.sect_offset = 0 
+	//pr_notice("ppaf.ch_len = %d, ppaf.lun_len = %d, ppaf.sect_len = %d, ppaf.pln_len = %d, ppaf.pg_len = %d, ppaf.blk_len = %d \n",
+	//	ppaf.ch_len, ppaf.lun_len, ppaf.sect_len, ppaf.pln_len, ppaf.pg_len, ppaf.blk_len);
+	//pr_notice("ppaf.ch_offset = %d, ppaf.lun_offset = %d, ppaf.pln_offset = %d, ppaf.blk_offset = %d, ppaf.pg_offset = %d, ppaf.sect_offset = %d \n",
+	//	ppaf.ch_offset, ppaf.lun_offset, ppaf.pln_offset, ppaf.blk_offset, ppaf.pg_offset, ppaf.sect_offset);
+	//
+	
+	//	ppaf.ch_len = 3, ppaf.lun_len = 0, ppaf.sect_len = 0, ppaf.pln_len = 0, ppaf.pg_len = 9, ppaf.blk_len = 10 
+	//	[  675.646464] ppaf.ch_offset = 19, ppaf.lun_offset = 19, ppaf.pln_offset = 0, ppaf.blk_offset = 9, ppaf.pg_offset = 0, ppaf.sect_offset = 0 
 
-	*/	
-	/*
-	pr_notice("alightpblk->ppaf.sec_mask = 0x%llx,alightpblk->ppaf.pln_mask = 0x%llx,alightpblk->ppaf.ch_mask = 0x%llx, \
-			alightpblk->ppaf.lun_mask = 0x%llx,alightpblk->ppaf.pg_mask = 0x%llx, \
-			alightpblk->ppaf.blk_mask = 0x%llx,alightpblk->ppaf_bitsize = %d \n",
-			alightpblk->ppaf.sec_mask,alightpblk->ppaf.pln_mask,alightpblk->ppaf.ch_mask,
-			alightpblk->ppaf.lun_mask,alightpblk->ppaf.pg_mask,
-			alightpblk->ppaf.blk_mask,alightpblk->ppaf_bitsize);
-	*/
-	/*
-	alightpblk->ppaf.sec_mask = 0x0,alightpblk->ppaf.pln_mask = 0x0,alightpblk->ppaf.ch_mask = 0x7,
-	alightpblk->ppaf.lun_mask = 0x0,alightpblk->ppaf.pg_mask = 0xff8, 
-	alightpblk->ppaf.blk_mask = 0x3ff000,
-	alightpblk->ppaf_bitsize = 22
-	*/
+		
+	
+	//pr_notice("alightpblk->ppaf.sec_mask = 0x%llx,alightpblk->ppaf.pln_mask = 0x%llx,alightpblk->ppaf.ch_mask = 0x%llx, \
+	//		alightpblk->ppaf.lun_mask = 0x%llx,alightpblk->ppaf.pg_mask = 0x%llx, \
+	//		alightpblk->ppaf.blk_mask = 0x%llx,alightpblk->ppaf_bitsize = %d \n",
+	//		alightpblk->ppaf.sec_mask,alightpblk->ppaf.pln_mask,alightpblk->ppaf.ch_mask,
+	//		alightpblk->ppaf.lun_mask,alightpblk->ppaf.pg_mask,
+	//		alightpblk->ppaf.blk_mask,alightpblk->ppaf_bitsize);
+	
+	
+	//alightpblk->ppaf.sec_mask = 0x0,alightpblk->ppaf.pln_mask = 0x0,alightpblk->ppaf.ch_mask = 0x7,
+	//alightpblk->ppaf.lun_mask = 0x0,alightpblk->ppaf.pg_mask = 0xff8, 
+	//alightpblk->ppaf.blk_mask = 0x3ff000,
+	//alightpblk->ppaf_bitsize = 22
+	
 
-	/*		
-	pr_notice("alightpblk->ppaf.sec_offset = 0x%x\n,alightpblk->ppaf.pln_offset= 0x%x\n, \
-	alightpblk->ppaf.ch_offset= 0x%x\n, alightpblk->ppaf.lun_offset= 0x%x\n,alightpblk->ppaf.pg_offset= 0x%x\n,	\
-	alightpblk->ppaf.blk_offset= 0x%x\n",alightpblk->ppaf.sec_offset,alightpblk->ppaf.pln_offset,
-	alightpblk->ppaf.ch_offset, alightpblk->ppaf.lun_offset,alightpblk->ppaf.pg_offset,	alightpblk->ppaf.blk_offset);
-	*/
-	/*
-	[ 5354.208847] alightpblk->ppaf.sec_offset = 0x0
-	,alightpblk->ppaf.pln_offset= 0x0
-	,	alightpblk->ppaf.ch_offset= 0x0
-	, alightpblk->ppaf.lun_offset= 0x3
-	,alightpblk->ppaf.pg_offset= 0x3
-	,		alightpblk->ppaf.blk_offset= 0xc
+			
+	//pr_notice("alightpblk->ppaf.sec_offset = 0x%x\n,alightpblk->ppaf.pln_offset= 0x%x\n, \
+	//alightpblk->ppaf.ch_offset= 0x%x\n, alightpblk->ppaf.lun_offset= 0x%x\n,alightpblk->ppaf.pg_offset= 0x%x\n,	\
+	//alightpblk->ppaf.blk_offset= 0x%x\n",alightpblk->ppaf.sec_offset,alightpblk->ppaf.pln_offset,
+	//alightpblk->ppaf.ch_offset, alightpblk->ppaf.lun_offset,alightpblk->ppaf.pg_offset,	alightpblk->ppaf.blk_offset);
+	
+	
+	//[ 5354.208847] alightpblk->ppaf.sec_offset = 0x0
+	//,alightpblk->ppaf.pln_offset= 0x0
+	//,	alightpblk->ppaf.ch_offset= 0x0
+	//, alightpblk->ppaf.lun_offset= 0x3
+	//,alightpblk->ppaf.pg_offset= 0x3
+	//,		alightpblk->ppaf.blk_offset= 0xc
 
-	*/
+	
 	
 	return 0;
 }
-
+*/
 static void* lightpblk_init(struct nvm_tgt_dev *dev, struct gendisk **ptdisk, struct nvm_ioctl_create *create)
 {
 	int ret = 0;	
@@ -315,10 +375,10 @@ static inline struct ppa_addr addr_ppa32_to_ppa64(struct f2fs_sb_info *sbi, u32 
 							lightpblk->ppaf.sec_offset;
 	}
 
-	/*pr_notice("ppa64.g.blk = 0x%x ,ppa64.g.pg= 0x%x ,ppa64.g.lun = 0x%x ,ppa64.g.ch = 0x%x ,ppa64.g.pl = 0x%x ,ppa64.g.sec = 0x%x \n",ppa64.g.blk,
-					ppa64.g.pg,ppa64.g.lun,ppa64.g.ch,ppa64.g.pl,ppa64.g.sec);
-	pr_notice("ppa64.ppa = 0x%llx\n",ppa64.ppa);
-	*/
+	//pr_notice("ppa64.g.blk = 0x%x ,ppa64.g.pg= 0x%x ,ppa64.g.lun = 0x%x ,ppa64.g.ch = 0x%x ,ppa64.g.pl = 0x%x ,ppa64.g.sec = 0x%x \n",ppa64.g.blk,
+				//	ppa64.g.pg,ppa64.g.lun,ppa64.g.ch,ppa64.g.pl,ppa64.g.sec);
+	//pr_notice("ppa64.ppa = 0x%llx\n",ppa64.ppa);
+	
 	/*
 	[ 5354.208884] ppa64.g.blk = 0x0 ,ppa64.g.pg= 0x40 ,ppa64.g.lun = 0x0 ,ppa64.g.ch = 0x0 ,ppa64.g.pl = 0x0 ,ppa64.g.sec = 0x0 
 	[ 5354.208885] ppa64.ppa = 0x400000 
@@ -428,6 +488,12 @@ static inline u32 tgt_ppa64_to_ppa32(struct lightpblk *alightpblk, struct ppa_ad
 static void tgt_end_io_write(struct nvm_rq* rqd)
 {
 	
+#ifdef CMO_SUM
+		struct timeval end_t;
+		do_gettimeofday(&end_t);
+		long delta = amf_pmu_delta(&rqd->start_rq, &end_t);
+		pr_notice("write interval = %ld\n", delta);
+#endif
 	nvm_dev_dma_free(rqd->dev->parent, rqd->meta_list, rqd->dma_meta_list);
 	//bio_put(rqd->bio);
 	kfree(rqd);

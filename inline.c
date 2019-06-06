@@ -163,6 +163,7 @@ clear_out:
 	return 0;
 }
 
+// 将内联的数据转换成正常索引的形式
 int f2fs_convert_inline_inode(struct inode *inode)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
@@ -170,21 +171,26 @@ int f2fs_convert_inline_inode(struct inode *inode)
 	struct page *ipage, *page;
 	int err = 0;
 
+	// 1. 若inode没有设置FI_INLINE_DATA这个flag则直接返回0
 	if (!f2fs_has_inline_data(inode))
 		return 0;
 
+	// 2. 得到inode的第0个page，数据page
 	page = f2fs_grab_cache_page(inode->i_mapping, 0, false);
 	if (!page)
 		return -ENOMEM;
 
+	// 3. 锁住fs
 	f2fs_lock_op(sbi);
 
+	// 4. 得到inode node page
 	ipage = f2fs_get_node_page(sbi, inode->i_ino);
 	if (IS_ERR(ipage)) {
 		err = PTR_ERR(ipage);
 		goto out;
 	}
 
+	// 5. 根据inode，inode node page填充dn
 	set_new_dnode(&dn, inode, ipage, ipage, 0);
 
 	if (f2fs_has_inline_data(inode))

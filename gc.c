@@ -163,7 +163,7 @@ void f2fs_stop_gc_thread(struct f2fs_sb_info *sbi)
 	kfree(gc_th);
 	sbi->gc_thread = NULL;
 }
-
+/*根据gc类型选择不同的GC模式*/
 static int select_gc_type(struct f2fs_sb_info *sbi, int gc_type)
 {
 	int gc_mode = (gc_type == BG_GC) ? GC_CB : GC_GREEDY;
@@ -179,7 +179,7 @@ static int select_gc_type(struct f2fs_sb_info *sbi, int gc_type)
 	}
 	return gc_mode;
 }
-
+/*根据p.alloc_mode，设置不同的victim_sel_policy*/
 static void select_policy(struct f2fs_sb_info *sbi, int gc_type,
 			int type, struct victim_sel_policy *p)
 {
@@ -187,12 +187,12 @@ static void select_policy(struct f2fs_sb_info *sbi, int gc_type,
 
 	if (p->alloc_mode == SSR) {
 		p->gc_mode = GC_GREEDY;
-		p->dirty_segmap = dirty_i->dirty_segmap[type];
+		p->dirty_segmap = dirty_i->dirty_segmap[type];//SSR只能使用本type的segment
 		p->max_search = dirty_i->nr_dirty[type];
 		p->ofs_unit = 1;
-	} else {
+	} else {// LFS
 		p->gc_mode = select_gc_type(sbi, gc_type);
-		p->dirty_segmap = dirty_i->dirty_segmap[DIRTY];
+		p->dirty_segmap = dirty_i->dirty_segmap[DIRTY];// LFS都可以用
 		p->max_search = dirty_i->nr_dirty[DIRTY];
 		p->ofs_unit = sbi->segs_per_sec;
 	}
@@ -205,7 +205,7 @@ static void select_policy(struct f2fs_sb_info *sbi, int gc_type,
 
 	/* let's select beginning hot/small space first in no_heap mode*/
 	if (test_opt(sbi, NOHEAP) &&
-		(type == CURSEG_HOT_DATA || IS_NODESEG(type)))
+		(type == CURSEG_HOT_DATA || IS_NODESEG(type)))//在no_heap模式下选择一开始的hot/small space
 		p->offset = 0;
 	else
 		p->offset = SIT_I(sbi)->last_victim[p->gc_mode];
@@ -224,7 +224,7 @@ static unsigned int get_max_cost(struct f2fs_sb_info *sbi,
 	else /* No other gc_mode */
 		return 0;
 }
-
+// 前台GC可以使用后台GC选择好的victim segment
 static unsigned int check_bg_victims(struct f2fs_sb_info *sbi)
 {
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
@@ -234,6 +234,7 @@ static unsigned int check_bg_victims(struct f2fs_sb_info *sbi)
 	 * If the gc_type is FG_GC, we can select victim segments
 	 * selected by background GC before.
 	 * Those segments guarantee they have small valid blocks.
+	 * 
 	 */
 	for_each_set_bit(secno, dirty_i->victim_secmap, MAIN_SECS(sbi)) {
 		if (sec_usage_check(sbi, secno))
@@ -308,6 +309,18 @@ static unsigned int count_bits(const unsigned long *addr,
  * and it does not remove it from dirty seglist.
  * When it is called from SSR segment selection, it finds a segment
  * which has minimum valid blocks and removes it from dirty seglist.
+ * 
+ * 这个函数通过2个路径调用：
+ * 一、GC   二、SSR segment selection
+ * 当GC时调用，本函数只是得到一个victim segment，不将其从dirty seglist中移除
+ * 当在SSR segment selection中调用，找到最小valid blocks的segment，并将其移动到dirty seglist.
+ *
+ * 调用：
+ * get_ssr_segment():v_ops->get_victim(sbi, &segno, BG_GC, type, SSR)
+ * __get_victim():DIRTY_I(sbi)->v_ops->get_victim(sbi, victim, gc_type,NO_CHECK_TYPE, LFS);
+ * @ gc_type: BG_GC还是FG_GC或else
+ * @ type: CURSEG_XXX_XXX
+ * @ alloc_mode:LFS还是SSR
  */
 static int get_victim_by_default(struct f2fs_sb_info *sbi,
 		unsigned int *result, int gc_type, int type, char alloc_mode)
@@ -322,12 +335,13 @@ static int get_victim_by_default(struct f2fs_sb_info *sbi,
 	mutex_lock(&dirty_i->seglist_lock);
 
 	p.alloc_mode = alloc_mode;
+	// 1. 根据gc_type、type、alloc_mode，填充不同的victim_sel_policy
 	select_policy(sbi, gc_type, type, &p);
 
 	p.min_segno = NULL_SEGNO;
 	p.min_cost = get_max_cost(sbi, &p);
-
-	if (*result != NULL_SEGNO) {
+	
+	if (*result != NULL_SEGNO) {// 如果result已经有值，且result所在segment有有效块，且目前没有被使用，则得到这个值
 		if (IS_DATASEG(get_seg_entry(sbi, *result)->type) &&
 			get_valid_blocks(sbi, *result, false) &&
 			!sec_usage_check(sbi, GET_SEC_FROM_SEG(sbi, *result)))
@@ -335,11 +349,11 @@ static int get_victim_by_default(struct f2fs_sb_info *sbi,
 		goto out;
 	}
 
-	if (p.max_search == 0)
+	if (p.max_search == 0)// 比如在SSR中本type没有找到其他可用segment
 		goto out;
 
 	last_victim = sm->last_victim[p.gc_mode];
-	if (p.alloc_mode == LFS && gc_type == FG_GC) {
+	if (p.alloc_mode == LFS && gc_type == FG_GC) {// 利用之前后台GC准备好的victim
 		p.min_segno = check_bg_victims(sbi);
 		if (p.min_segno != NULL_SEGNO)
 			goto got_it;
@@ -350,7 +364,7 @@ static int get_victim_by_default(struct f2fs_sb_info *sbi,
 		unsigned int segno;
 
 		segno = find_next_bit(p.dirty_segmap, last_segment, p.offset);
-		if (segno >= last_segment) {
+		if (segno >= last_segment) {// 若没找到，则从0开始找
 			if (sm->last_victim[p.gc_mode]) {
 				last_segment =
 					sm->last_victim[p.gc_mode];
@@ -361,7 +375,7 @@ static int get_victim_by_default(struct f2fs_sb_info *sbi,
 			break;
 		}
 
-		p.offset = segno + p.ofs_unit;
+		p.offset = segno + p.ofs_unit;//对齐seg_per_sec
 		if (p.ofs_unit > 1) {
 			p.offset -= segno % p.ofs_unit;
 			nsearched += count_bits(p.dirty_segmap,
@@ -380,7 +394,7 @@ static int get_victim_by_default(struct f2fs_sb_info *sbi,
 
 		cost = get_gc_cost(sbi, segno, &p);
 
-		if (p.min_cost > cost) {
+		if (p.min_cost > cost) {//找到最小cost的segno
 			p.min_segno = segno;
 			p.min_cost = cost;
 		}
@@ -1282,7 +1296,7 @@ int f2fs_gc(struct f2fs_sb_info *sbi, bool sync,
 	return ret;
 			}
 #endif
-
+// 为sbi->sm_info->dirty_info->v_ops设置victim select算法
 void f2fs_build_gc_manager(struct f2fs_sb_info *sbi)
 {
 	DIRTY_I(sbi)->v_ops = &default_v_ops;
